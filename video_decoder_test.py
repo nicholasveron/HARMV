@@ -4,22 +4,26 @@
 # import the opencv library
 import cv2
 import numpy
-from importables.video_decoder import VideoDecoder, DecodedVideoData
+from importables.video_decoder import ThreadedVideoDecoder
 import time
 
-# decoder = VideoDecoder("rtsp://192.168.0.101:8554/cam", 15)
-decoder = VideoDecoder("/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4", 15)
+decoder = ThreadedVideoDecoder("rtsp://192.168.0.101:8554/cam", 15, 120, True, 640).start()
+# decoder = ThreadedVideoDecoder("/mnt/c/Skripsi/dataset-h264/R001A001/S001C001P001R001A001_rgb.mp4", 15, 5, True, 320).start()
+# decoder = ThreadedVideoDecoder("/mnt/c/Skripsi/dataset-h264-libx/R001A001/S001C001P001R001A001_rgb.mp4", 15, 10, True, 320).start()
 
 while(True):
 
-    start_time = time.perf_counter_ns()
-    # Capture the video frame
-    # by frame
+    start_time = time.perf_counter()
+    # Capture the video frame by frame
     data = decoder.read()
 
-    fr = cv2.flip(data[1], 0)
-    fl_x = cv2.flip(data[2], 0)
-    fl_y = cv2.flip(data[3], 0)
+    if cv2.waitKey(1) & 0xFF == ord('q') or not data[0]:
+        decoder.stop()
+        break
+
+    fr = data[1]
+    fl_x = data[2]
+    fl_y = data[3]
 
     # Display the resulting frame
 
@@ -30,19 +34,15 @@ while(True):
                             fl_x_s,
                             fl_y_s))
 
-    stacked_rez = cv2.resize(stacked, (int(stacked.shape[1]/3), int(stacked.shape[0]/3)))
-
-    cv2.imshow('frame', stacked_rez)
+    cv2.imshow('frame', stacked)
 
     # the 'q' button is set as the
     # quitting button you may use any
     # desired button of your choice
-    if cv2.waitKey(1) & 0xFF == ord('q') or not data[0]:
-        break
 
-    print(1000/((time.perf_counter_ns()-start_time) * 0.000001), end="\r")
+    print(1/((time.perf_counter()-start_time)), end="\r")
 
 # After the loop release the cap object
-decoder.release()
+# decoder.stop()
 # Destroy all the windows
 cv2.destroyAllWindows()
