@@ -1,15 +1,17 @@
-"""Video decoder that decodes video Frames and bounded Motion Vectors images"""
+"""Motion vector extractor processes motion vector from video capturer"""
 
+from .video_capturer import VideoCapturerProcessSpawner, FrameData
 import cv2
 import numba
 import numpy
 from numpy import ndarray
 import time
-from threading import Thread
-from mvextractor.videocap import VideoCap  # pylint: disable=no-name-in-module
+from multiprocessing import Queue, Process, active_children
+import queue
+import os
+import sys
 
-DecodedVideoData = tuple[bool, ndarray, ndarray, ndarray]
-MotionVectorData = tuple[bool, ndarray, ndarray, str, float]
+MotionVectorData = tuple[bool, ndarray, ndarray, ndarray]
 
 
 @numba.njit(fastmath=True)
@@ -57,73 +59,22 @@ def rev_letterbox(
     return img
 
 
-class ThreadedVideoCapture:
-    """An improved VideoCap class to fetch realtime (even if drop frame)"""
-
-    def __init__(self, path: str, target_fps: int) -> None:
-        print("Initializing video capturer thread ...")
-        self.stream = VideoCap()
-        self.stream.open(path)
-        if not self.stream.open(path):
-            assert False, "ERROR WHILE LOADING " + path
-        self.mv_data: MotionVectorData = self.stream.read()
-        self.stopped = False
-        self.delay = 1/target_fps
-        print("Video capturer thread initialized")
-
-    def start(self):
-        """Start new thread for video capturer"""
-        print("Starting video capturer thread ...")
-        Thread(target=self.get, args=()).start()
-        print("Video capturer thread started")
-        return self
-
-    def get(self) -> None:
-        """Read next frame into memory"""
-        while not self.stopped:
-            time.sleep(self.delay)
-            if not self.mv_data[0]:
-                self.stop()
-            else:
-                self.mv_data = self.stream.read()
-
-    def read(self) -> MotionVectorData:
-        """Returns latest frame"""
-        return self.mv_data
-
-    def stop(self) -> None:
-        """Release memory when not used anymore"""
-        print("Stopping video capturer thread ...")
-        self.stopped = True
-        self.stream.release()
-        print("Video capturer thread stopped")
-
-    def __del__(self) -> None:
-        """Release memory when not used anymore"""
-        print("Stopping video capturer thread ...")
-        self.stopped = True
-        self.stream.release()
-        print("Video capturer thread stopped")
-
-
-class VideoDecoder:
-    """Video decoder that decodes video Frames and bounded Motion Vectors images"""
+class MotionVectorExtractor:
+    """Motion vector extractor processes motion vector from video capturer"""
 
     def __init__(self,
                  path: str,
                  bound: int,
-                 target_fps: int,
+                 camera_sampling_rate: int,
                  letterboxed: bool = False,
                  new_shape: int = 640,
+                 box: bool = False,
                  color: tuple[int, ...] = (114, 114, 114, 127, 127),
                  stride: int = 32,
-                 box: bool = False
                  ) -> None:
 
-        print("Initializing video decoder ...")
-
         # initiate threaded mvextractor VideoCapture
-        self.__video_thread: ThreadedVideoCapture = ThreadedVideoCapture(path, target_fps).start()
+        self.__video_process: VideoCapturerProcessSpawner = VideoCapturerProcessSpawner(path, camera_sampling_rate).start()
 
         # bound param
         self.__bound: int = bound
@@ -141,11 +92,9 @@ class VideoDecoder:
         self.__stride: int = stride
         self.__box: bool = box
 
-        print("Video decoder initialized")
-
-    def read(self) -> DecodedVideoData:
-        """Reads next frame into memory"""
-        mv_data: MotionVectorData = self.__video_thread.mv_data
+    def read(self) -> MotionVectorData:
+        """Read and processes next frame"""
+        mv_data: FrameData = self.__video_process.read()
 
         available: bool = False
         frame: ndarray = numpy.empty((1, 1, 1)).astype(numpy.uint8)
@@ -155,7 +104,6 @@ class VideoDecoder:
         if mv_data[0]:
             available, frame, flows_x, flows_y = self.__process_frame(
                 mv_data,
-                self.__bound,
                 self.__inverse_rgb_bound_2x_x_bound,
                 self.__inverse_rgb_bound_2x
             )
@@ -194,11 +142,10 @@ class VideoDecoder:
     @staticmethod
     @numba.njit(fastmath=True, parallel=True)
     def __process_frame(
-        mv_data: MotionVectorData,
-        bound: int,
+        mv_data: FrameData,
         inverse_rgb_bound_2x_x_bound: float,
         inverse_rgb_bound_2x: float
-    ) -> DecodedVideoData:
+    ) -> MotionVectorData:
         flows_x: ndarray = numpy.empty((1, 1)).astype(numpy.uint8)
         flows_y: ndarray = numpy.empty((1, 1)).astype(numpy.uint8)
 
@@ -253,71 +200,105 @@ class VideoDecoder:
 
         return True, frame, flows_x, flows_y
 
-    def stop(self) -> None:
+    def stop(self) -> "MotionVectorExtractor":
         """Stop the video capturer thread"""
-        self.__video_thread.stop()
+        self.__video_process.stop()
+        return self
+
+    def suicide(self) -> None:
+        os.kill(os.getpid(), 9)
 
     def __del__(self) -> None:
-        self.__video_thread.stop()
+        self.stop()
 
 
-class ThreadedVideoDecoder:
-    """Threaded version of VideoDecoder class to fetch realtime (even if drop frame)"""
+class MotionVectorExtractorProcessSpawner:
+    """Threaded version of MotionVectorExtractor class to fetch realtime (even if drop frame)"""
 
     def __init__(self,
                  path: str,
                  bound: int,
-                 target_fps: int,
+                 sampling_rate: int,
+                 camera_sampling_rate: int,
                  letterboxed: bool = False,
                  new_shape: int = 640,
                  color: tuple[int, ...] = (114, 114, 114, 127, 127),
                  stride: int = 32,
                  box: bool = False
                  ) -> None:
-        print("Initializing video decoder thread ...")
-        self.stream = VideoDecoder(path,
-                                   bound,
-                                   target_fps,
-                                   letterboxed,
-                                   new_shape,
-                                   color,
-                                   stride,
-                                   box
-                                   )
-        self.dc_data: DecodedVideoData = self.stream.read()
-        self.stopped = False
-        self.delay = 1/target_fps
-        print("Video decoder thread initialized")
+        self.queue: Queue = Queue(maxsize=1)
+        self.path: str = path
+        self.bound: int = bound
+        self.sampling_rate = sampling_rate
+        self.camera_sampling_rate: int = camera_sampling_rate
+        self.letterboxed: bool = letterboxed
+        self.new_shape: int = new_shape
+        self.color: tuple[int, ...] = color
+        self.stride: int = stride
+        self.box: bool = box
+        self.delay: float = 1/sampling_rate
+        self.run: bool = False
 
-    def start(self):
-        """Start new thread for video decoder"""
-        print("Starting video decoder thread ...")
-        Thread(target=self.get, args=()).start()
-        print("Video decoder thread started")
+    def __refresh(self) -> None:
+        count_timeout: int = 0
+        mvex = MotionVectorExtractor(self.path,
+                                     self.bound,
+                                     self.camera_sampling_rate,
+                                     self.letterboxed,
+                                     self.new_shape,
+                                     self.box,
+                                     self.color,
+                                     self.stride
+                                     )
+        self.data: MotionVectorData = mvex.read()
+        self.queue.put(self.data)
+        while True:
+            start: float = time.perf_counter()
+            self.data = mvex.read()
+            if not self.data[0]:
+                print("Motion vector extractor source empty, killing process...")
+                mvex.stop()
+                mvex.suicide()
+                return
+            try:
+                self.queue.put_nowait(self.data)
+            except queue.Full:
+                count_timeout += 1
+                if count_timeout >= self.sampling_rate*3:  # how many frames until it kills itself
+                    print("Motion vector extractor timeout, killing process...")
+                    mvex.stop()
+                    mvex.suicide()
+                    return
+            else:
+                count_timeout = 0
+            end: float = time.perf_counter()
+            time.sleep(max(0, self.delay - (end - start)))
+
+    def read(self) -> MotionVectorData:
+        if self.run:
+            try:
+                self.data: MotionVectorData = self.queue.get_nowait()
+            except queue.Empty:
+                _ = ""
+        return self.data
+
+    def start(self) -> "MotionVectorExtractorProcessSpawner":
+        """Spawns new process for motion vector extractor"""
+        print("Spawning and initializing motion vector extractor process...")
+        self.process: Process = Process(target=self.__refresh, args=(), daemon=False)
+        self.process.start()
+        self.data: MotionVectorData = self.queue.get()
+        self.run = True
+        print("Motion vector extractor process started")
         return self
 
-    def get(self) -> None:
-        """Process next frame and decode"""
-        while not self.stopped:
-            time.sleep(self.delay)
-            if not self.dc_data[0]:
-                self.stop()
-            else:
-                self.dc_data = self.stream.read()
+    def stop(self) -> "MotionVectorExtractorProcessSpawner":
+        """Kill existing process for motion vector extractor"""
+        if self.run:
+            print("Stopping motion vector extractor process...")
+            self.run = False
+            print("Motion vector extractor process stopped")
+        return self
 
-    def read(self) -> DecodedVideoData:
-        """Returns latest decoded frame"""
-        return self.dc_data
-
-    def stop(self) -> None:
-        """Stop the video decoder thread"""
-        print("Stopping video decoder thread ...")
-        self.stopped = True
-        self.stream.stop()
-        print("Video decoder thread stopped")
-
-    def __del__(self) -> None:
-        print("Stopping video decoder thread ...")
-        self.stopped = True
-        self.stream.stop()
-        print("Video decoder thread stopped")
+    def __del__(self):
+        self.stop()
