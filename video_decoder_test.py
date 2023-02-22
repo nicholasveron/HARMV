@@ -4,12 +4,13 @@
 # import the opencv library
 import cv2
 import numpy
-from importables.video_decoder import ThreadedVideoDecoder
+from importables.motion_vector_extractor import MotionVectorExtractorProcessSpawner
 import time
 
-decoder = ThreadedVideoDecoder("rtsp://192.168.0.101:8554/cam", 15, 120, True, 640).start()
-# decoder = ThreadedVideoDecoder("/mnt/c/Skripsi/dataset-h264/R001A001/S001C001P001R001A001_rgb.mp4", 15, 5, True, 320).start()
-# decoder = ThreadedVideoDecoder("/mnt/c/Skripsi/dataset-h264-libx/R001A001/S001C001P001R001A001_rgb.mp4", 15, 10, True, 320).start()
+# decoder = MotionVectorExtractorProcessSpawner("rtsp://192.168.0.186:8554/cam", 15, 60, 120, True, 320, box=True).start()
+decoder = MotionVectorExtractorProcessSpawner("rtsp://192.168.0.101:8554/cam", 15, 30, 30, True, 320).start()
+# decoder = MotionVectorExtractorProcessSpawner("/mnt/c/Skripsi/dataset-h264/R001A001/S001C001P001R001A001_rgb.mp4", 15, 5, 5, True, 320).start()
+# decoder = MotionVectorExtractorProcessSpawner("/mnt/c/Skripsi/dataset-h264-libx/R001A001/S001C001P001R001A001_rgb.mp4", 15, 10, 10, True, 320).start()
 
 while(True):
 
