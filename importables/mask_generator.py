@@ -251,6 +251,10 @@ class MaskGenerator:
             "cuda:2": self.__device.type,
         })['model']
 
+        for m in self.__model.model:
+            if isinstance(m, torch.nn.Upsample):
+                setattr(m, "recompute_scale_factor", None)
+
         # set model precision
         self.__model = self.__model.half() if self.__half_capable else self.__model.float()
 

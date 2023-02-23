@@ -1,6 +1,6 @@
 """An improved VideoCap class to fetch realtime (even if drop frame) using multiprocessing"""
 
-from multiprocessing import Queue, Process, active_children
+from multiprocessing import Queue, Process
 import queue
 from mvextractor.videocap import VideoCap  # pylint: disable=no-name-in-module
 import time
@@ -30,10 +30,6 @@ class VideoCapturerProcessSpawner:
         while True:
             start: float = time.perf_counter()
             self.data = cam.read()
-            if not self.data[0]:
-                print("Video capturer source empty, killing process...")
-                cam.release()
-                return
             try:
                 self.queue.put_nowait(self.data)
             except queue.Full:
@@ -44,6 +40,10 @@ class VideoCapturerProcessSpawner:
                     return
             else:
                 count_timeout = 0
+            if not self.data[0]:
+                print("Video capturer source empty, killing process...")
+                cam.release()
+                return
             end: float = time.perf_counter()
             time.sleep(max(0, self.delay - (end - start)))
 

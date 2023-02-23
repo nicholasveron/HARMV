@@ -6,7 +6,7 @@ import numba
 import numpy
 from numpy import ndarray
 import time
-from multiprocessing import Queue, Process, active_children
+from multiprocessing import Queue, Process
 import queue
 import os
 import sys
@@ -109,13 +109,17 @@ class MotionVectorExtractor:
             )
 
         if available:
-            if flows_x.shape == (1, 1):
-                if self.__last_flows_x.shape == (1, 1):
+            if flows_x.shape[0] == 1:
+                if self.__last_flows_x.shape[0] == 1:
                     res: tuple[int, int] = frame.shape[0], frame.shape[1]
                     self.__last_flows_x: ndarray = numpy.ones(res, dtype=numpy.uint8) * 127
                     self.__last_flows_y: ndarray = numpy.ones(res, dtype=numpy.uint8) * 127
-                flows_x = self.__last_flows_x
-                flows_y = self.__last_flows_y
+                flows_x = self.__last_flows_x.copy()
+                flows_y = self.__last_flows_y.copy()
+            else:
+                self.__last_flows_x = flows_x.copy()
+                self.__last_flows_y = flows_y.copy()
+
             if self.__letterboxed:
                 stacked_flows = numpy.dstack(
                     (flows_x, flows_y)
@@ -146,16 +150,13 @@ class MotionVectorExtractor:
         inverse_rgb_bound_2x_x_bound: float,
         inverse_rgb_bound_2x: float
     ) -> MotionVectorData:
-        flows_x: ndarray = numpy.empty((1, 1)).astype(numpy.uint8)
-        flows_y: ndarray = numpy.empty((1, 1)).astype(numpy.uint8)
-
+        flows: ndarray = numpy.empty((2, 1, 1)).astype(numpy.uint8)
         frame: ndarray = mv_data[1]
         res: tuple[int, int] = frame.shape[0], frame.shape[1]
 
         # check if there is motion vector, if there is, process
         if len(mv_data[2]) != 0:
-            flows_x: ndarray = numpy.zeros(res, dtype=numpy.int16)
-            flows_y: ndarray = numpy.zeros(res, dtype=numpy.int16)
+            flows = numpy.zeros((2, res[0], res[1]), dtype=numpy.int16)
 
             for x in numba.prange(len(mv_data[2])):
                 motion_vector = mv_data[2][x]
@@ -173,32 +174,30 @@ class MotionVectorExtractor:
                     end_y: int = int(dst_y-block_size_y*0.5+block_size_y)
                     end_x: int = int(dst_x-block_size_x*0.5+block_size_x)
 
-                    flows_x[str_y:end_y, str_x:end_x] = motion_x
-                    flows_y[str_y:end_y, str_x:end_x] = motion_y
+                    flows[0][str_y:end_y, str_x:end_x] = motion_x
+                    flows[1][str_y:end_y, str_x:end_x] = motion_y
 
             # rescale motion vector with bound to 0 255
             # bound is rephrased
             # translate to 255 first from 2*bound
             # then if < 0 which is lower than bound and > 1 which is higher than bound
 
-            flows_x: ndarray = inverse_rgb_bound_2x * flows_x + inverse_rgb_bound_2x_x_bound
-            flows_y: ndarray = inverse_rgb_bound_2x * flows_y + inverse_rgb_bound_2x_x_bound
+            flows = inverse_rgb_bound_2x * flows + inverse_rgb_bound_2x_x_bound
 
             for x in numba.prange(res[0]):
                 for y in numba.prange(res[1]):
-                    if flows_x[x][y] < 0:
-                        flows_x[x][y] = 0
-                    if flows_y[x][y] < 0:
-                        flows_y[x][y] = 0
-                    if flows_x[x][y] > 255:
-                        flows_x[x][y] = 255
-                    if flows_y[x][y] > 255:
-                        flows_y[x][y] = 255
+                    if flows[0][x][y] < 0:
+                        flows[0][x][y] = 0
+                    if flows[1][x][y] < 0:
+                        flows[1][x][y] = 0
+                    if flows[0][x][y] > 255:
+                        flows[0][x][y] = 255
+                    if flows[1][x][y] > 255:
+                        flows[1][x][y] = 255
 
-            flows_x: ndarray = flows_x.astype(numpy.uint8)
-            flows_y: ndarray = flows_y.astype(numpy.uint8)
+            flows = flows.astype(numpy.uint8)
 
-        return True, frame, flows_x, flows_y
+        return True, frame, flows[0], flows[1]
 
     def stop(self) -> "MotionVectorExtractor":
         """Stop the video capturer thread"""
@@ -255,11 +254,6 @@ class MotionVectorExtractorProcessSpawner:
         while True:
             start: float = time.perf_counter()
             self.data = mvex.read()
-            if not self.data[0]:
-                print("Motion vector extractor source empty, killing process...")
-                mvex.stop()
-                mvex.suicide()
-                return
             try:
                 self.queue.put_nowait(self.data)
             except queue.Full:
@@ -271,6 +265,11 @@ class MotionVectorExtractorProcessSpawner:
                     return
             else:
                 count_timeout = 0
+            if not self.data[0]:
+                print("Motion vector extractor source empty, killing process...")
+                mvex.stop()
+                mvex.suicide()
+                return
             end: float = time.perf_counter()
             time.sleep(max(0, self.delay - (end - start)))
 

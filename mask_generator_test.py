@@ -8,6 +8,7 @@ from importables.motion_vector_extractor import MotionVectorExtractorProcessSpaw
 from importables.mask_generator import MaskGenerator
 import time
 from collections import deque
+from ptlflow.utils import flow_utils
 
 timer_avg = deque([0]*101, maxlen=101)
 
@@ -17,14 +18,40 @@ yolo_maskgen = MaskGenerator(
     0.5,
     0.45)
 
+# mv_args = {
+#     "path": "rtsp://0.tcp.ap.ngrok.io:17426/cam",
+#     "bound": 15,
+#     "camera_sampling_rate": 30,
+#     "letterboxed": True,
+#     "new_shape": 320,
+#     "box": False
+# }
+
+# mv_args = {
+#     "path": "rtsp://192.168.0.185:5540/ch0",
+#     "bound": 15,
+#     "camera_sampling_rate": 30,
+#     "letterboxed": True,
+#     "new_shape": 320,
+#     "box": False
+# }
 mv_args = {
-    "path": "rtsp://0.tcp.ap.ngrok.io:17426/cam",
+    "path": "rtsp://0.tcp.ap.ngrok.io:15225/cam",
     "bound": 15,
     "camera_sampling_rate": 30,
     "letterboxed": True,
     "new_shape": 320,
     "box": False
 }
+
+# mv_args = {
+#     "path": "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4",
+#     "bound": 15,
+#     "camera_sampling_rate": 5,
+#     "letterboxed": True,
+#     "new_shape": 320,
+#     "box": False
+# }
 
 sample_frame_reader = MotionVectorExtractor(**mv_args)
 first_frame = sample_frame_reader.read()
@@ -95,8 +122,18 @@ while(True):
     flxshow = numpy.hstack((fl_x, mf, fl_x_s))
     flyshow = numpy.hstack((fl_y, mf, fl_y_s))
 
+    flxy_masked = flow_utils.flow_to_rgb(numpy.dstack((fl_x_masked, fl_y_masked)))
+    flxy_masked = cv2.cvtColor(flxy_masked, cv2.COLOR_RGB2BGR)
+
+    flxyrgb = numpy.hstack((fl_x_s, fl_y_s, flxy_masked))
+
     fshow = numpy.vstack(
-        (frshow, flxshow, flyshow)
+        (
+            frshow,
+            flxshow,
+            flyshow,
+            flxyrgb
+        )
     )
 
     cv2.imshow('frame', fshow)
