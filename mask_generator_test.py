@@ -18,72 +18,74 @@ yolo_maskgen = MaskGenerator(
     0.5,
     0.45)
 
-# mv_args = {
-#     "path": "rtsp://0.tcp.ap.ngrok.io:17426/cam",
-#     "bound": 15,
-#     "camera_sampling_rate": 30,
-#     "letterboxed": True,
-#     "new_shape": 320,
-#     "box": False
-# }
-
-# mv_args = {
-#     "path": "rtsp://192.168.0.185:5540/ch0",
-#     "bound": 15,
-#     "camera_sampling_rate": 30,
-#     "letterboxed": True,
-#     "new_shape": 320,
-#     "box": False
-# }
 mv_args = {
-    "path": "rtsp://0.tcp.ap.ngrok.io:15225/cam",
+    "path": "rtsp://192.168.0.101:8554/cam",
     "bound": 15,
-    "camera_sampling_rate": 30,
+    "camera_realtime": True,
+    "camera_update_rate": 30,
     "letterboxed": True,
     "new_shape": 320,
     "box": False
 }
 
-# mv_args = {
-#     "path": "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4",
-#     "bound": 15,
-#     "camera_sampling_rate": 5,
-#     "letterboxed": True,
-#     "new_shape": 320,
-#     "box": False
-# }
+mv_args = {
+    "path": "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4",
+    "bound": 15,
+    "camera_realtime": False,
+    "camera_update_rate": 120,
+    "letterboxed": True,
+    "new_shape": 320,
+    "box": False
+}
 
 sample_frame_reader = MotionVectorExtractor(**mv_args)
 first_frame = sample_frame_reader.read()
 print(first_frame[1].shape)
 sample_frame_reader.stop()
 yolo_maskgen.generate_once(first_frame[1])
-decoder = MotionVectorExtractorProcessSpawner(**mv_args, sampling_rate=30).start()
+# decoder = MotionVectorExtractor(**mv_args)
+decoder = MotionVectorExtractorProcessSpawner(**mv_args, update_rate=200).start()
 # decoder = MotionVectorExtractorProcessSpawner("rtsp://192.168.0.101:8554/cam", 15, 30, 30, True, 320, box=True).start()
 # decoder = MotionVectorExtractorProcessSpawner("rtsp://192.168.0.183:8554/cam", 15, 30, 30, True, 320, box=True).start()
 # decoder = MotionVectorExtractorProcessSpawner("rtsp://192.168.0.185:5540/ch0", 15, 40, 320, True, 320, box=True).start()
 # decoder = MotionVectorExtractorProcessSpawner("/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4", 15, 5, 5, True, 640, box=True).start()
 
+counter = 0
 
 while(True):
     # Capture the video frame by frame
     start_time = time.perf_counter()
 
-    data = decoder.read()
+    # using constant multiprocessing(faster)
+    available, fr, fl = decoder.read()
 
-    if cv2.waitKey(1) & 0xFF == ord('q') or not data[0]:
+    counter += 1
+
+    if cv2.waitKey(1) & 0xFF == ord('q') or not available:
         decoder.stop()
         break
 
-    fr = data[1]
-    fl_x = data[2]
-    fl_y = data[3]
+    mask_data = yolo_maskgen.generate_once(fr)
+
+    fl_x = fl[..., 0]
+    fl_y = fl[..., 1]
 
     # letterbox no need, decoder with letterbox enabled
     # fr = rev_letterbox(fr, 320)
     # fl_x = rev_letterbox(fl_x, 320)
     # fl_y = rev_letterbox(fl_y, 320)
-    mask_data = yolo_maskgen.generate_once(fr)
+
+    # using threading, (slower, avg 48fps, 1% 30fps )
+    # data = decoder.read_while_process(yolo_maskgen.generate_once)
+    # available, fr, fl = data[0]
+
+    # if cv2.waitKey(1) & 0xFF == ord('q') or not available:
+    #     decoder.stop()
+    #     break
+
+    # fl_x = fl[..., 0]
+    # fl_y = fl[..., 1]
+    # mask_data = data[1]
 
     mask_data = mask_data[1]
 
@@ -147,6 +149,7 @@ while(True):
 # Destroy all the windows
 decoder.stop()
 cv2.destroyAllWindows()
+print(counter, f"{round((101-counter)/101, 1)}% loss")
 
 # 3 640 640
 # Half(1, 25200, 980, strides=[24696000, 980, 1], requires_grad=0, device=cuda:0),

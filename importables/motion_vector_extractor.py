@@ -7,11 +7,14 @@ import numpy
 from numpy import ndarray
 import time
 from multiprocessing import Queue, Process
-import queue
 import os
-import sys
+from threading import Thread
+from collections import deque
+from typing import Callable, Any
+import h5py
+import queue
 
-MotionVectorData = tuple[bool, ndarray, ndarray, ndarray]
+MotionVectorData = tuple[bool, ndarray, ndarray]
 
 
 @numba.njit(fastmath=True)
@@ -64,140 +67,153 @@ class MotionVectorExtractor:
 
     def __init__(self,
                  path: str,
-                 bound: int,
-                 camera_sampling_rate: int,
+                 bound: int = 32,
+                 raw_motion_vectors: bool = False,
+                 camera_realtime: bool = False,
+                 camera_update_rate: int = 60,
+                 camera_buffer_size: int = 0,
                  letterboxed: bool = False,
                  new_shape: int = 640,
                  box: bool = False,
-                 color: tuple[int, ...] = (114, 114, 114, 127, 127),
+                 color: tuple[int, int, int, int, int] = (114, 114, 114, 128, 128),
                  stride: int = 32,
                  ) -> None:
 
         # initiate threaded mvextractor VideoCapture
-        self.__video_process: VideoCapturerProcessSpawner = VideoCapturerProcessSpawner(path, camera_sampling_rate).start()
+        self.__video_process: VideoCapturerProcessSpawner = VideoCapturerProcessSpawner(
+            path,
+            camera_realtime,
+            camera_update_rate,
+            camera_buffer_size
+        ).start()
 
         # bound param
-        self.__bound: int = bound
-        self.__inverse_rgb_bound_2x: float = 255 / (self.__bound * 2)
-        self.__inverse_rgb_bound_2x_x_bound: float = self.__inverse_rgb_bound_2x * self.__bound
-
-        # last flows
-        self.__last_flows_x: ndarray = numpy.empty((1, 1)).astype(numpy.uint8)
-        self.__last_flows_y: ndarray = numpy.empty((1, 1)).astype(numpy.uint8)
+        self.__raw_motion_vectors: bool = raw_motion_vectors
+        self.__bound: int = bound  # bound will be ignored if raw motion vector
+        self.__inverse_rgb_2x_bound: float = 255 / (self.__bound * 2)
+        self.__half_rgb: int = 128
 
         # letterbox params
         self.__letterboxed: bool = letterboxed
         self.__new_shape: int = new_shape
-        self.__color: tuple[int, ...] = color
+        self.__color: tuple[int, int, int, int, int] = color
+        if raw_motion_vectors:
+            self.__color = (*color[:-2], 0, 0)
         self.__stride: int = stride
         self.__box: bool = box
 
-    def read(self) -> MotionVectorData:
-        """Read and processes next frame"""
-        mv_data: FrameData = self.__video_process.read()
-
-        available: bool = False
-        frame: ndarray = numpy.empty((1, 1, 1)).astype(numpy.uint8)
-        flows_x: ndarray = numpy.empty((1, 1)).astype(numpy.uint8)
-        flows_y: ndarray = numpy.empty((1, 1)).astype(numpy.uint8)
-
-        if mv_data[0]:
-            available, frame, flows_x, flows_y = self.__process_frame(
-                mv_data,
-                self.__inverse_rgb_bound_2x_x_bound,
-                self.__inverse_rgb_bound_2x
-            )
-
-        if available:
-            if flows_x.shape[0] == 1:
-                if self.__last_flows_x.shape[0] == 1:
-                    res: tuple[int, int] = frame.shape[0], frame.shape[1]
-                    self.__last_flows_x: ndarray = numpy.ones(res, dtype=numpy.uint8) * 127
-                    self.__last_flows_y: ndarray = numpy.ones(res, dtype=numpy.uint8) * 127
-                flows_x = self.__last_flows_x.copy()
-                flows_y = self.__last_flows_y.copy()
-            else:
-                self.__last_flows_x = flows_x.copy()
-                self.__last_flows_y = flows_y.copy()
-
-            if self.__letterboxed:
-                stacked_flows = numpy.dstack(
-                    (flows_x, flows_y)
-                )
-                stacked_flows = rev_letterbox(
-                    stacked_flows,
-                    self.__new_shape,
-                    self.__color[-2:],
-                    self.__stride,
-                    self.__box
-                )
-                frame = rev_letterbox(
-                    frame,
-                    self.__new_shape,
-                    self.__color[:-2],
-                    self.__stride,
-                    self.__box
-                )
-                flows_x = stacked_flows[:, :, 0]
-                flows_y = stacked_flows[:, :, 1]
-
-        return available, frame, flows_x, flows_y
+        # shared memory
+        self.__initialized: bool = False
 
     @staticmethod
     @numba.njit(fastmath=True, parallel=True)
-    def __process_frame(
-        mv_data: FrameData,
-        inverse_rgb_bound_2x_x_bound: float,
-        inverse_rgb_bound_2x: float
-    ) -> MotionVectorData:
-        flows: ndarray = numpy.empty((2, 1, 1)).astype(numpy.uint8)
-        frame: ndarray = mv_data[1]
-        res: tuple[int, int] = frame.shape[0], frame.shape[1]
+    def __process_mv(
+        mv_data: ndarray,
+        res: tuple[int, int]
+    ) -> tuple[bool, ndarray]:
 
         # check if there is motion vector, if there is, process
-        if len(mv_data[2]) != 0:
-            flows = numpy.zeros((2, res[0], res[1]), dtype=numpy.int16)
+        if len(mv_data) == 0:
+            return False, numpy.empty((0, 0, 2), dtype=numpy.int16)
 
-            for x in numba.prange(len(mv_data[2])):
-                motion_vector = mv_data[2][x]
-                # if motion vector is forward, then process
-                if motion_vector[0] == -1:
-                    block_size_x: int = motion_vector[1]
-                    block_size_y: int = motion_vector[2]
-                    dst_x: int = motion_vector[5]
-                    dst_y: int = motion_vector[6]
-                    motion_x: int = motion_vector[7]
-                    motion_y: int = motion_vector[8]
+        motion_vectors = numpy.zeros((res[0], res[1], 2), dtype=numpy.int16)
 
-                    str_y: int = int(dst_y-block_size_y*0.5)
-                    str_x: int = int(dst_x-block_size_x*0.5)
-                    end_y: int = int(dst_y-block_size_y*0.5+block_size_y)
-                    end_x: int = int(dst_x-block_size_x*0.5+block_size_x)
+        for x in numba.prange(len(mv_data)):
+            motion_vector = mv_data[x]
+            # if motion vector is forward, then process
+            if motion_vector[0] == -1:
+                block_size_x: int = motion_vector[1]
+                block_size_y: int = motion_vector[2]
+                dst_x: int = motion_vector[5]
+                dst_y: int = motion_vector[6]
+                motion_x: int = motion_vector[7]
+                motion_y: int = motion_vector[8]
 
-                    flows[0][str_y:end_y, str_x:end_x] = motion_x
-                    flows[1][str_y:end_y, str_x:end_x] = motion_y
+                str_y: int = int(dst_y-block_size_y*0.5)
+                str_x: int = int(dst_x-block_size_x*0.5)
+                end_y: int = int(dst_y-block_size_y*0.5+block_size_y)
+                end_x: int = int(dst_x-block_size_x*0.5+block_size_x)
 
-            # rescale motion vector with bound to 0 255
-            # bound is rephrased
-            # translate to 255 first from 2*bound
-            # then if < 0 which is lower than bound and > 1 which is higher than bound
+                motion_vectors[str_y:end_y, str_x:end_x, 0] = motion_x
+                motion_vectors[str_y:end_y, str_x:end_x, 1] = motion_y
 
-            flows = inverse_rgb_bound_2x * flows + inverse_rgb_bound_2x_x_bound
+        return True, motion_vectors
 
-            for x in numba.prange(res[0]):
-                for y in numba.prange(res[1]):
-                    if flows[0][x][y] < 0:
-                        flows[0][x][y] = 0
-                    if flows[1][x][y] < 0:
-                        flows[1][x][y] = 0
-                    if flows[0][x][y] > 255:
-                        flows[0][x][y] = 255
-                    if flows[1][x][y] > 255:
-                        flows[1][x][y] = 255
+    @staticmethod
+    @numba.njit(fastmath=True, parallel=True)
+    def rescale_mv(
+            motion_vectors: ndarray,
+            half_rgb: int,
+            inverse_rgb_2x_bound: float
+    ) -> ndarray:
+        """Static method to rescale raw motion vector data to 0 255 uint8"""
+        # rescale motion vector with bound to 0 255
+        # bound is refactored to precalculate most of the constant
+        # translate to 255 first from 2*bound
+        # then if < 0 which is lower than bound and > 1 which is higher than bound
+        # from int16 to uint8
+        for x in numba.prange(motion_vectors.shape[0]):
+            for y in numba.prange(motion_vectors.shape[1]):
+                motion_vector_x = (inverse_rgb_2x_bound * motion_vectors[x, y, 0]) + half_rgb
+                motion_vector_y = (inverse_rgb_2x_bound * motion_vectors[x, y, 1]) + half_rgb
 
-            flows = flows.astype(numpy.uint8)
+                motion_vectors[x, y, 0] = max(min(motion_vector_x, 255), 0)
+                motion_vectors[x, y, 1] = max(min(motion_vector_y, 255), 0)
 
-        return True, frame, flows[0], flows[1]
+        motion_vectors = motion_vectors.astype(numpy.uint8)
+
+        return motion_vectors
+
+    def read(self) -> MotionVectorData:
+        """Read and processes next frame"""
+
+        fr_data: FrameData = self.__video_process.read()
+
+        available: bool = fr_data[0]
+
+        if not available:
+            return False, numpy.empty((0)), numpy.empty((0))
+
+        frame = fr_data[1]
+
+        if not self.__initialized:
+            self.__res: tuple[int, int] = frame.shape[0], frame.shape[1]
+            self.__last_motion_vectors: ndarray = numpy.ones((*self.__res, 2), dtype=numpy.uint8) * 128
+            self.__initialized: bool = True
+
+        if self.__letterboxed:
+            frame = rev_letterbox(
+                frame,
+                self.__new_shape,
+                self.__color[:-2],
+                self.__stride,
+                self.__box
+            )
+
+        exist, motion_vectors = self.__process_mv(
+            fr_data[2],
+            self.__res
+        )
+
+        if exist:
+            if not self.__raw_motion_vectors:
+                motion_vectors = self.rescale_mv(
+                    motion_vectors,
+                    self.__half_rgb,
+                    self.__inverse_rgb_2x_bound
+                )
+            self.__last_motion_vectors = motion_vectors
+
+        if self.__letterboxed:
+            motion_vectors = rev_letterbox(
+                self.__last_motion_vectors,
+                self.__new_shape,
+                self.__color[-2:],
+                self.__stride,
+                self.__box
+            )
+
+        return True, frame, motion_vectors
 
     def stop(self) -> "MotionVectorExtractor":
         """Stop the video capturer thread"""
@@ -205,6 +221,7 @@ class MotionVectorExtractor:
         return self
 
     def suicide(self) -> None:
+        """Kill by process id, only be used if instance is a process"""
         os.kill(os.getpid(), 9)
 
     def __del__(self) -> None:
@@ -216,88 +233,229 @@ class MotionVectorExtractorProcessSpawner:
 
     def __init__(self,
                  path: str,
-                 bound: int,
-                 sampling_rate: int,
-                 camera_sampling_rate: int,
+                 bound: int = 32,
+                 raw_motion_vectors: bool = False,
+                 update_rate: int = 60,
+                 camera_realtime: bool = False,
+                 camera_update_rate: int = 60,
+                 camera_buffer_size: int = 0,
                  letterboxed: bool = False,
                  new_shape: int = 640,
-                 color: tuple[int, ...] = (114, 114, 114, 127, 127),
+                 box: bool = False,
+                 color: tuple[int, int, int, int, int] = (114, 114, 114, 128, 128),
                  stride: int = 32,
-                 box: bool = False
                  ) -> None:
-        self.queue: Queue = Queue(maxsize=1)
-        self.path: str = path
-        self.bound: int = bound
-        self.sampling_rate = sampling_rate
-        self.camera_sampling_rate: int = camera_sampling_rate
-        self.letterboxed: bool = letterboxed
-        self.new_shape: int = new_shape
-        self.color: tuple[int, ...] = color
-        self.stride: int = stride
-        self.box: bool = box
-        self.delay: float = 1/sampling_rate
-        self.run: bool = False
+        self.__queue: Queue = Queue(maxsize=1)
+        self.__path: str = path
+        self.__bound: int = bound
+        self.__raw_motion_vectors: bool = raw_motion_vectors
+        self.__update_rate = update_rate
+        self.__camera_realtime: bool = camera_realtime
+        self.__camera_update_rate: int = camera_update_rate
+        self.__camera_buffer_size: int = camera_buffer_size
+        self.__letterboxed: bool = letterboxed
+        self.__new_shape: int = new_shape
+        self.__color: tuple[int, ...] = color
+        self.__stride: int = stride
+        self.__box: bool = box
+        self.__delay: float = 1/update_rate
+        self.__run: bool = False
+        self.__first_read: bool = False
 
     def __refresh(self) -> None:
         count_timeout: int = 0
-        mvex = MotionVectorExtractor(self.path,
-                                     self.bound,
-                                     self.camera_sampling_rate,
-                                     self.letterboxed,
-                                     self.new_shape,
-                                     self.box,
-                                     self.color,
-                                     self.stride
+        mvex = MotionVectorExtractor(self.__path,
+                                     self.__bound,
+                                     self.__raw_motion_vectors,
+                                     self.__camera_realtime,
+                                     self.__camera_update_rate,
+                                     self.__camera_buffer_size,
+                                     self.__letterboxed,
+                                     self.__new_shape,
+                                     self.__box,
+                                     self.__color,
+                                     self.__stride
                                      )
-        self.data: MotionVectorData = mvex.read()
-        self.queue.put(self.data)
+        data: MotionVectorData = mvex.read()
+        self.__queue.put(data)
+        timeout_time: int = self.__update_rate*3
         while True:
             start: float = time.perf_counter()
-            self.data = mvex.read()
+            data = mvex.read()
             try:
-                self.queue.put_nowait(self.data)
+                self.__queue.put(data, block=not self.__camera_realtime)
             except queue.Full:
                 count_timeout += 1
-                if count_timeout >= self.sampling_rate*3:  # how many frames until it kills itself
+                if count_timeout >= timeout_time:  # how many frames until it kills itself
                     print("Motion vector extractor timeout, killing process...")
                     mvex.stop()
                     mvex.suicide()
                     return
             else:
                 count_timeout = 0
-            if not self.data[0]:
+            if not data[0]:
                 print("Motion vector extractor source empty, killing process...")
                 mvex.stop()
                 mvex.suicide()
                 return
             end: float = time.perf_counter()
-            time.sleep(max(0, self.delay - (end - start)))
+            time.sleep(max(0, self.__delay - (end - start)))
 
     def read(self) -> MotionVectorData:
-        if self.run:
+        """Pulls motion vector data from motion vector process and returns it"""
+        if self.__run and self.__first_read:
+            if not self.__data[0]:
+                print("Read: Motion vector extractor source empty, killing process...")
+                self.stop(False)
+                return self.__data
             try:
-                self.data: MotionVectorData = self.queue.get_nowait()
+                self.__data = self.__queue.get(block=not self.__camera_realtime)
             except queue.Empty:
                 _ = ""
-        return self.data
+        self.__first_read = True
+        return self.__data
 
     def start(self) -> "MotionVectorExtractorProcessSpawner":
         """Spawns new process for motion vector extractor"""
         print("Spawning and initializing motion vector extractor process...")
-        self.process: Process = Process(target=self.__refresh, args=(), daemon=False)
-        self.process.start()
-        self.data: MotionVectorData = self.queue.get()
-        self.run = True
+        self.__process: Process = Process(target=self.__refresh, args=(), daemon=False)
+        self.__process.start()
+        self.__data: MotionVectorData = self.__queue.get()
+        self.__run = True
         print("Motion vector extractor process started")
         return self
 
-    def stop(self) -> "MotionVectorExtractorProcessSpawner":
+    def stop(self, manual: bool = True) -> "MotionVectorExtractorProcessSpawner":
         """Kill existing process for motion vector extractor"""
-        if self.run:
+        if self.__run:
             print("Stopping motion vector extractor process...")
-            self.run = False
+            if not self.__camera_realtime and manual:  # manual trigger to prevent auto kill recursion
+                while self.__data[0]:
+                    self.read()
+                os.kill(self.__process.pid, 9)  # type: ignore
+            self.__run = False
+            self.__first_read = False
             print("Motion vector extractor process stopped")
         return self
 
     def __del__(self):
         self.stop()
+
+
+class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpawner):
+    """Writes and reads processed motion vector to and from a file, mocking MotionVectorExtractor behaviour"""
+
+    FRAME_PATH = "frames"
+    FRAME_HWC_ATTR = "frame_hwc"
+    FRAME_COUNT_ATTR = "frame_count"
+    MOTION_VECTORS_PATH = "motion_vectors"
+    MOTION_VECTORS_ARE_RAW_ATTR = "motion_vectors_are_raw"
+    MOTION_VECTORS_BOUND_ATTR = "motion_vectors_bound"
+    MOTION_VECTORS_HWC_ATTR = "motion_vectors_hwc"
+    MOTION_VECTORS_COUNT_ATTR = "motion_vectors_count"
+
+    def __init__(self,
+                 h5py_instance: h5py.File,
+                 bound: int = 32,
+                 raw_motion_vector: bool = False,
+                 *args,
+                 **kwargs
+                 ) -> None:
+        self.__frame: deque[ndarray] = deque()
+        self.__motion_vectors: deque[ndarray] = deque()
+        self.__bound: int = bound
+        self.__inverse_rgb_2x_bound: float = 255 / (self.__bound * 2)
+        self.__half_rgb: int = 128
+        self.__raw_motion_vector: bool = raw_motion_vector
+        self.__h5py_instance: h5py.File = h5py_instance
+        self.__motion_vectors_type = True
+
+    def load(self) -> bool:
+        """Loads frames and motion_vectors from file to queues"""
+        self.flush()
+
+        if not all([x in self.__h5py_instance for x in [self.FRAME_PATH, self.MOTION_VECTORS_PATH]]):
+            return False
+
+        for frame in self.__h5py_instance[self.FRAME_PATH][()]:  # type: ignore
+            self.__frame.append(frame)
+        for motion_vectors in self.__h5py_instance[self.MOTION_VECTORS_PATH][()]:  # type: ignore
+            self.__motion_vectors.append(motion_vectors)
+
+        if len(self.__frame) != len(self.__motion_vectors):
+            self.flush()
+            return False
+
+        self.__motion_vectors_type = bool(self.__h5py_instance.attrs[self.MOTION_VECTORS_ARE_RAW_ATTR])
+
+        return True
+
+    def save(self, raw_motion_vector=True, bound: int = -1) -> bool:
+        """Saves frames and motion_vectors in queues to file and flushes the queue"""
+        if self.FRAME_PATH in self.__h5py_instance:
+            del self.__h5py_instance[self.FRAME_PATH]
+        if self.MOTION_VECTORS_PATH in self.__h5py_instance:
+            del self.__h5py_instance[self.MOTION_VECTORS_PATH]
+
+        self.__h5py_instance.create_dataset(name=self.FRAME_PATH, data=numpy.array(list(self.__frame)),
+                                            compression="gzip",
+                                            )
+        self.__h5py_instance.create_dataset(name=self.MOTION_VECTORS_PATH, data=numpy.array(list(self.__motion_vectors)),
+                                            compression="gzip",
+                                            )
+
+        if not all(
+            numpy.allclose(a, self.__h5py_instance[b][()]) for a, b in [  # type: ignore
+                (self.__frame, self.FRAME_PATH),
+                (self.__motion_vectors, self.MOTION_VECTORS_PATH)
+            ]
+        ):
+            return False
+
+        self.__h5py_instance.attrs[self.FRAME_HWC_ATTR] = self.__frame[0].shape
+        self.__h5py_instance.attrs[self.FRAME_COUNT_ATTR] = len(self.__frame)
+        self.__h5py_instance.attrs[self.MOTION_VECTORS_ARE_RAW_ATTR] = raw_motion_vector
+        self.__h5py_instance.attrs[self.MOTION_VECTORS_BOUND_ATTR] = bound
+        self.__h5py_instance.attrs[self.MOTION_VECTORS_HWC_ATTR] = self.__motion_vectors[0].shape
+        self.__h5py_instance.attrs[self.MOTION_VECTORS_COUNT_ATTR] = len(self.__motion_vectors)
+
+        self.flush()
+        return True
+
+    def append(self, data: MotionVectorData) -> None:
+        """Appends frame and motion_vectors to respective queues"""
+        if data[0]:
+            self.__frame.append(data[1])
+            self.__motion_vectors.append(data[2])
+
+    def read(self) -> MotionVectorData:
+        """Pops frame and motion_vectors from queue simulates MotionVectorExtractor's read"""
+        if len(self.__frame) <= 0:
+            return False, numpy.empty((0)), numpy.empty((0))
+        frame = self.__frame.popleft()
+        motion_vectors = self.__motion_vectors.popleft()
+        if not self.__raw_motion_vector and self.__motion_vectors_type:
+            motion_vectors = self.rescale_mv(
+                motion_vectors,
+                self.__half_rgb,
+                self.__inverse_rgb_2x_bound
+            )
+        return True, frame, motion_vectors
+
+    def flush(self) -> None:
+        """Clear all queues"""
+        self.__frame.clear()
+        self.__motion_vectors.clear()
+        self.__motion_vectors_type = True
+
+    def start(self) -> "MotionVectorMocker":
+        """Ignored functions to eliminate mock error"""
+        return self
+
+    def stop(self) -> "MotionVectorMocker":
+        """Ignored functions to eliminate mock error"""
+        return self
+
+    def suicide(self) -> None:
+        """Ignored functions to eliminate mock error"""
+        pass
