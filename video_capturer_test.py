@@ -6,7 +6,8 @@ import cv2
 from importables.video_capturer import VideoCapturerProcessSpawner, FrameData
 import time
 
-webcam_ip = "rtsp://0.tcp.ap.ngrok.io:15225/cam"
+webcam_ip = "rtsp://192.168.0.101:8554/cam"
+# webcam_ip = "rtsp://0.tcp.ap.ngrok.io:15225/cam"
 video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
 
 # webcam: realtime normal fps
@@ -17,45 +18,45 @@ args = {
 }
 sampling_rate = 30
 
-# webcam: not realtime, low sampling rate (should be lagging behind)
-args = {
-    "path": webcam_ip,
-    "realtime": False,
-    "update_rate": 60,
-}
-sampling_rate = 5
+# # webcam: not realtime, low sampling rate (should be lagging behind)
+# args = {
+#     "path": webcam_ip,
+#     "realtime": False,
+#     "update_rate": 60,
+# }
+# sampling_rate = 5
 
-# webcam: not realtime, low sampling rate (should not be lagging behind)
-args = {
-    "path": webcam_ip,
-    "realtime": True,
-    "update_rate": 60,
-}
-sampling_rate = 5
+# # webcam: not realtime, low sampling rate (should not be lagging behind)
+# args = {
+#     "path": webcam_ip,
+#     "realtime": True,
+#     "update_rate": 60,
+# }
+# sampling_rate = 5
 
-# video: realtime high update rate will skip/lost frames ( >0% loss)
+# # video: realtime high update rate will skip/lost frames ( >0% loss)
+# args = {
+#     "path": video_path,
+#     "realtime": True,
+#     "update_rate": 60,
+# }
+# sampling_rate = 30
+
+# # video: not realtime high update rate will not skip/lost frames ( =0% loss)
 args = {
     "path": video_path,
-    "realtime": True,
+    "realtime": False,
     "update_rate": 60,
 }
 sampling_rate = 30
 
-# video: not realtime high update rate will not skip/lost frames ( =0% loss)
-args = {
-    "path": video_path,
-    "realtime": False,
-    "update_rate": 60,
-}
-sampling_rate = 30
-
-# video: realtime high sampling rate will duplicate frames ( <0% loss)
-args = {
-    "path": video_path,
-    "realtime": True,
-    "update_rate": 30,
-}
-sampling_rate = 120
+# # video: realtime high sampling rate will duplicate frames ( <0% loss)
+# args = {
+#     "path": video_path,
+#     "realtime": True,
+#     "update_rate": 30,
+# }
+# sampling_rate = 120
 
 video_cap = VideoCapturerProcessSpawner(**args).start()
 counter = 0
@@ -86,4 +87,4 @@ while(True):
 # decoder.stop()
 # Destroy all the windows
 cv2.destroyAllWindows()
-print(counter, f"{round((100-counter)/100, 1)}% loss")
+print(counter, f"{round((101-counter)/101, 1)}% loss")

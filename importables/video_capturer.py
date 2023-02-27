@@ -18,6 +18,7 @@ class VideoCapturerProcessSpawner:
         self.__delay: float = 1/update_rate
         self.__path: str = path
         self.__run: bool = False
+        self.__first_read: bool = False
         self.__realtime = realtime
         self.__queue: Queue = Queue(maxsize=1 if realtime else buffer_size)  # buffer size will be ignored if realtime == True
 
@@ -28,6 +29,7 @@ class VideoCapturerProcessSpawner:
             assert False, "ERROR WHILE LOADING " + self.__path
         data: FrameData = video_capturer.read()
         self.__queue.put(data)  # initialization frame
+        timeout_time: int = self.__update_rate*3
         while True:
             start: float = time.perf_counter()
             data = video_capturer.read()
@@ -35,7 +37,7 @@ class VideoCapturerProcessSpawner:
                 self.__queue.put(data, block=not self.__realtime)
             except queue.Full:
                 count_timeout += 1
-                if count_timeout >= self.__update_rate*3:  # how many frames until it kills itself
+                if count_timeout >= timeout_time:  # how many frames until it kills itself
                     print("Video capturer timeout, killing process...")
                     video_capturer.release()
                     return
@@ -50,15 +52,16 @@ class VideoCapturerProcessSpawner:
 
     def read(self) -> FrameData:
         """Pulls frame data from video capturer process and returns it"""
-        if self.__run:
+        if self.__run and self.__first_read:
+            if not self.__data[0]:  # automatically kill process if source empty
+                print("Read: Video capturer source empty, killing process...")
+                self.stop(False)
+                return self.__data
             try:
                 self.__data = self.__queue.get(block=not self.__realtime)
             except queue.Empty:
                 _ = ""
-            if not self.__data[0]:  # automatically kill process if source empty
-                print("Video capturer source empty, killing process...")
-                self.stop(False)
-
+        self.__first_read = True
         return self.__data
 
     def start(self) -> "VideoCapturerProcessSpawner":
@@ -79,6 +82,7 @@ class VideoCapturerProcessSpawner:
                 while self.__data[0]:
                     self.read()
             self.__run = False
+            self.__first_read = False
             os.kill(self.__process.pid, 9)  # type: ignore
             print("Video capturer process stopped")
         return self
