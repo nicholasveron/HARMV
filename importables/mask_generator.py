@@ -1,20 +1,20 @@
 # pyright: reportPrivateImportUsage=false
+# pyright: reportGeneralTypeIssues=false
 """Mask Generator generates peoples mask using YOLOv7 - Mask from bgr frames"""
 
 import torch
 import torchvision
-from torchvision import transforms
 import yaml
 import numpy
 
-from detectron2.utils.memory import retry_if_cuda_oom
 from detectron2.layers import paste_masks_in_image
-from detectron2.export import TracingAdapter
 
 from detectron2.structures import Boxes
 from numpy import ndarray
 from detectron2.modeling.poolers import ROIPooler
 from torch import Tensor
+import h5py
+from collections import deque
 
 
 @torch.jit.script
@@ -216,7 +216,7 @@ def rev_nms_conf_people_only_once(
     return found_s, output_s, output_mask_s
 
 
-MaskData = tuple[bool, ndarray, ndarray]
+MaskOnlyData = tuple[bool, ndarray]
 
 
 class MaskGenerator:
@@ -240,7 +240,7 @@ class MaskGenerator:
         # check device capability
         # self.__device: torch.device = torch.device("cpu")
         self.__device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.__half_capable: bool = False
+        self.__half_capable: bool = False  # only use full float because half causes some problems
         # self.__half_capable: bool = self.__device.type != "cpu"
 
         # load model
@@ -324,23 +324,25 @@ class MaskGenerator:
         self.__is_traced = True
         print("Masker model (yolov7-mask) warmed up")
 
-    def generate_list(self, letterboxed_image_list: list[ndarray], flip_bgr_rgb: bool = True) -> list[MaskData]:
+    def forward_maskonly(self, letterboxed_image_list: list[ndarray], flip_bgr_rgb: bool = True) -> list[MaskOnlyData]:
         """Generate detected people mask from letterboxed image provided"""
-        tensor_image_list: list[Tensor] = []
-        for image in letterboxed_image_list:
-            tensor_image_list.append(transforms.ToTensor()(image).numpy())
 
-        tensor_input: Tensor = torch.as_tensor(numpy.array(tensor_image_list), device=self.__device)
-        tensor_input: Tensor = tensor_input.half() if self.__half_capable else tensor_input.float()
+        tensor_input: Tensor = torch.as_tensor(numpy.array(letterboxed_image_list), device=self.__device)
+        tensor_input = tensor_input.permute(0, 3, 1, 2)
 
         if flip_bgr_rgb:
             tensor_input = tensor_input[:, [2, 1, 0]]
+
+        tensor_input = tensor_input/255
+
+        # only use full float because half causes some problems
+        # tensor_input = tensor_input.half() if self.__half_capable else tensor_input.float()
 
         if not self.__is_traced:
             self.__first_input(tensor_input)
 
         with torch.no_grad():
-            yolo_output = self.__model.forward(tensor_input)  # type:ignore
+            yolo_output = self.__model.forward(tensor_input).detach()  # type:ignore
 
         inference_output, attenuation, bases = unpack_inference(
             yolo_output,
@@ -362,8 +364,8 @@ class MaskGenerator:
             self.__iou_threshold
         )
 
-        results: list[MaskData] = [
-            (False, numpy.zeros((h, w), dtype=bool), numpy.array([], dtype=numpy.int64))
+        results: list[MaskOnlyData] = [
+            (False, numpy.zeros((h, w), dtype=bool))
         ] * n
 
         for i in range(n):
@@ -373,21 +375,18 @@ class MaskGenerator:
 
                 bboxes = Boxes(pred[:, : 4])
                 ori_pred_masks: Tensor = pred_masks.view(-1, self.__hyperparameters['mask_resolution'], self.__hyperparameters['mask_resolution'])
-                pred_masks = retry_if_cuda_oom(paste_masks_in_image)(ori_pred_masks, bboxes, (h, w), threshold=0.5)
+                pred_masks = paste_masks_in_image(ori_pred_masks, bboxes, (h, w), threshold=0.5)  # type:ignore
 
-                # pytorch doesn't have a bitwise_or.reduce, so transpose and any is used instead, improves time by half
-                pred_masks = torch.transpose(pred_masks, 1, 0)
-                total_mask: Tensor = torch.any(pred_masks, dim=1)
-                total_mask_np: ndarray = total_mask.detach().to("cpu", non_blocking=True).numpy()
-                bboxes_np: ndarray = bboxes.tensor.detach().to("cpu", non_blocking=True).numpy()
+                # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
+                total_mask: Tensor = torch.any(pred_masks, dim=0)
+                total_mask_np: ndarray = total_mask.to("cpu", non_blocking=True).numpy()
 
-                results[i] = (True, total_mask_np, bboxes_np)
+                results[i] = (True, total_mask_np)
 
         return results
 
-    def generate_once(self, letterboxed_image: ndarray, flip_bgr_rgb: bool = True) -> MaskData:
+    def forward_once_maskonly(self, letterboxed_image: ndarray, flip_bgr_rgb: bool = True) -> MaskOnlyData:
         """Generate detected people mask from letterboxed image provided"""
-        # tensor_input: Tensor = transforms.ToTensor()(letterboxed_image).to(self.__device, non_blocking=True)
         tensor_input: Tensor = torch.as_tensor(letterboxed_image, device=self.__device)
 
         tensor_input = tensor_input.permute(2, 0, 1)
@@ -399,13 +398,14 @@ class MaskGenerator:
 
         tensor_input = tensor_input/255
 
-        tensor_input = tensor_input.half() if self.__half_capable else tensor_input.float()
+        # only use full float because half causes some problems
+        # tensor_input = tensor_input.half() if self.__half_capable else tensor_input.float()
 
         if not self.__is_traced:
             self.__first_input(tensor_input)
 
         with torch.no_grad():
-            yolo_output = self.__model.forward(tensor_input)  # type:ignore
+            yolo_output = self.__model.forward(tensor_input).detach()  # type:ignore
 
         inference_output, attenuation, bases = unpack_inference(
             yolo_output,
@@ -427,7 +427,7 @@ class MaskGenerator:
             self.__iou_threshold
         )
 
-        result: MaskData = False, numpy.zeros((h, w), dtype=bool), numpy.array([], dtype=numpy.int64)
+        result: MaskOnlyData = False, numpy.zeros((h, w), dtype=bool)
 
         if found_s:
             pred: Tensor = output_s
@@ -435,12 +435,96 @@ class MaskGenerator:
 
             bboxes = Boxes(pred[:, :4])
             ori_pred_masks: Tensor = pred_masks.view(-1, self.__hyperparameters['mask_resolution'], self.__hyperparameters['mask_resolution'])
-            pred_masks = retry_if_cuda_oom(paste_masks_in_image)(ori_pred_masks, bboxes, (h, w), threshold=0.5)
+            pred_masks = paste_masks_in_image(ori_pred_masks, bboxes, (h, w), threshold=0.5)  # type:ignore
 
-            # pytorch doesn't have a bitwise_or.reduce, so transpose and any is used instead, improves time by half
-            pred_masks = torch.transpose(pred_masks, 1, 0)
-            total_mask: Tensor = torch.any(pred_masks, dim=1)
+            # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
+            total_mask: Tensor = pred_masks.any(dim=0)
+            total_mask_np: ndarray = total_mask.to("cpu", non_blocking=True).numpy()
 
-            result = (True, total_mask.detach().to("cpu", non_blocking=True).numpy(), bboxes.tensor.detach().to("cpu", non_blocking=True).numpy())
+            result = (True, total_mask_np)
 
         return result
+
+
+class MaskMocker(MaskGenerator):
+    """Writes and reads generated mask to and from a file, mocking MaskGenerator behaviour"""
+
+    MASK_PATH = "masks"
+    MASK_EXIST_PATH = "masks_exist"
+    MASK_HWC_ATTR = "mask_hwc"
+    MASK_COUNT_ATTR = "mask_count"
+
+    def __init__(self, h5py_instance: h5py.File, *args, **kwargs) -> None:
+        self.__mask: deque[ndarray] = deque()
+        self.__mask_exist: deque[bool] = deque()
+        self.__h5py_instance: h5py.File = h5py_instance
+
+    def load(self) -> bool:
+        """Loads masks from file to queues"""
+        self.flush()
+
+        if not all([x in self.__h5py_instance for x in [self.MASK_PATH, self.MASK_EXIST_PATH]]):
+            return False
+
+        for mask in self.__h5py_instance[self.MASK_PATH][()]:  # type: ignore
+            self.__mask.append(mask)
+        for mask_exist in self.__h5py_instance[self.MASK_EXIST_PATH][()]:  # type: ignore
+            self.__mask_exist.append(mask_exist)
+
+        if len(self.__mask) != len(self.__mask_exist):
+            self.flush()
+            return False
+
+        return True
+
+    def save(self) -> bool:
+        """Saves masks in queues to file and flushes the queue"""
+        if self.MASK_PATH in self.__h5py_instance:
+            del self.__h5py_instance[self.MASK_PATH]
+        if self.MASK_EXIST_PATH in self.__h5py_instance:
+            del self.__h5py_instance[self.MASK_EXIST_PATH]
+
+        self.__h5py_instance.create_dataset(name=self.MASK_PATH, data=numpy.array(list(self.__mask)),
+                                            compression="gzip",
+                                            )
+        self.__h5py_instance.create_dataset(name=self.MASK_EXIST_PATH, data=numpy.array(list(self.__mask_exist)),
+                                            compression="gzip",
+                                            )
+
+        if not all(
+            numpy.allclose(a, self.__h5py_instance[b][()]) for a, b in [  # type: ignore
+                (self.__mask, self.MASK_PATH),
+                (self.__mask_exist, self.MASK_EXIST_PATH)
+            ]
+        ):
+            return False
+
+        self.__h5py_instance.attrs[self.MASK_HWC_ATTR] = self.__mask[0].shape
+        self.__h5py_instance.attrs[self.MASK_COUNT_ATTR] = len(self.__mask)
+
+        self.flush()
+        return True
+
+    def append(self, data: MaskOnlyData) -> None:
+        """Appends masks to respective queues"""
+        self.__mask_exist.append(data[0])
+        self.__mask.append(data[1])
+
+    def flush(self) -> None:
+        """Clear all queues"""
+        self.__mask.clear()
+        self.__mask_exist.clear()
+
+    def forward_once_maskonly(self, *args, **kwargs) -> MaskOnlyData:
+        """Pops frame and motion_vectors from queue simulates MotionVectorExtractor's read"""
+        if len(self.__mask) <= 0:
+            return False, numpy.empty((0))
+        mask: ndarray = self.__mask.popleft()
+        mask_exist: bool = self.__mask_exist.popleft()
+        return mask_exist, mask
+
+    def forward_maskonly(self, *args, **kwargs) -> list[MaskOnlyData]:
+        masks: list[MaskOnlyData] = []
+        while len(self.__mask) > 0:
+            masks.append(self.forward_once_maskonly())
+        return masks

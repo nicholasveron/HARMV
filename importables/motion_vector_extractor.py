@@ -8,9 +8,7 @@ from numpy import ndarray
 import time
 from multiprocessing import Queue, Process
 import os
-from threading import Thread
 from collections import deque
-from typing import Callable, Any
 import h5py
 import queue
 
@@ -432,8 +430,8 @@ class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpaw
         """Pops frame and motion_vectors from queue simulates MotionVectorExtractor's read"""
         if len(self.__frame) <= 0:
             return False, numpy.empty((0)), numpy.empty((0))
-        frame = self.__frame.popleft()
-        motion_vectors = self.__motion_vectors.popleft()
+        frame: ndarray = self.__frame.popleft()
+        motion_vectors: ndarray = self.__motion_vectors.popleft()
         if not self.__raw_motion_vector and self.__motion_vectors_type:
             motion_vectors = self.rescale_mv(
                 motion_vectors,
