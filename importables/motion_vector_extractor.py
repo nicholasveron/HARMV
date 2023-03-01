@@ -176,7 +176,10 @@ class MotionVectorExtractor:
 
         if not self.__initialized:
             self.__res: tuple[int, int] = frame.shape[0], frame.shape[1]
-            self.__last_motion_vectors: ndarray = numpy.ones((*self.__res, 2), dtype=numpy.uint8) * 128
+            if self.__raw_motion_vectors:
+                self.__last_motion_vectors: ndarray = numpy.zeros((*self.__res, 2), dtype=numpy.int16)
+            else:
+                self.__last_motion_vectors: ndarray = numpy.ones((*self.__res, 2), dtype=numpy.uint8) * 128
             self.__initialized: bool = True
 
         if self.__letterboxed:
@@ -369,7 +372,7 @@ class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpaw
         self.__motion_vectors_type = True
 
     def load(self) -> bool:
-        """Loads frames and motion_vectors from file to queues"""
+        """Loads frames and motion vectors from file to queues"""
         self.flush()
 
         if not all([x in self.__h5py_instance for x in [self.FRAME_PATH, self.MOTION_VECTORS_PATH]]):
@@ -389,7 +392,7 @@ class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpaw
         return True
 
     def save(self, raw_motion_vector=True, bound: int = -1) -> bool:
-        """Saves frames and motion_vectors in queues to file and flushes the queue"""
+        """Saves frames and motion vectors in queues to file and flushes the queue"""
         if self.FRAME_PATH in self.__h5py_instance:
             del self.__h5py_instance[self.FRAME_PATH]
         if self.MOTION_VECTORS_PATH in self.__h5py_instance:
@@ -421,13 +424,13 @@ class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpaw
         return True
 
     def append(self, data: MotionVectorData) -> None:
-        """Appends frame and motion_vectors to respective queues"""
+        """Appends frame and motion vectors to respective queues"""
         if data[0]:
-            self.__frame.append(data[1])
-            self.__motion_vectors.append(data[2])
+            self.__frame.append(data[1].copy())
+            self.__motion_vectors.append(data[2].copy())
 
     def read(self) -> MotionVectorData:
-        """Pops frame and motion_vectors from queue simulates MotionVectorExtractor's read"""
+        """Pops frame and motion vectors from queue simulates MotionVectorExtractor's read"""
         if len(self.__frame) <= 0:
             return False, numpy.empty((0)), numpy.empty((0))
         frame: ndarray = self.__frame.popleft()
