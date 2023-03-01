@@ -33,6 +33,7 @@ args_mvex = {
     "stride":  32,
 }
 
+
 decoder = MotionVectorExtractorProcessSpawner(**args_mvex, update_rate=300).start()
 mve_save = h5py.File("try_mve.h5", mode="w")
 mock_mve = MotionVectorMocker(mve_save, **args_mvex)
@@ -49,7 +50,7 @@ while(True):
         break
 
     fl = data[2]
-    # fl = MotionVectorExtractor.rescale_mv(data[2], (255/2), (255/2048))
+    fl = MotionVectorExtractor.rescale_mv(fl, 128, 1/2*args_mvex["bound"])
 
     fr = data[1]
     fl_x = fl[:, :, 0]
@@ -113,7 +114,6 @@ while(True):
         break
 
     fl_mock = data_mock[2]
-    # fl = MotionVectorExtractor.rescale_mv(data_mock[2], (255/2), (255/2048))
 
     fr_mock = data_mock[1]
     fl_x_mock = fl_mock[:, :, 0]

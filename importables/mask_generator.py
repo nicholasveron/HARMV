@@ -238,7 +238,6 @@ class MaskGenerator:
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
 
         # check device capability
-        # self.__device: torch.device = torch.device("cpu")
         self.__device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.__half_capable: bool = False  # only use full float because half causes some problems
         # self.__half_capable: bool = self.__device.type != "cpu"
@@ -379,7 +378,7 @@ class MaskGenerator:
 
                 # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
                 total_mask: Tensor = torch.any(pred_masks, dim=0)
-                total_mask_np: ndarray = total_mask.to("cpu", non_blocking=True).numpy()
+                total_mask_np: ndarray = total_mask.to("cpu").numpy()
 
                 results[i] = (True, total_mask_np)
 
@@ -439,7 +438,7 @@ class MaskGenerator:
 
             # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
             total_mask: Tensor = pred_masks.any(dim=0)
-            total_mask_np: ndarray = total_mask.to("cpu", non_blocking=True).numpy()
+            total_mask_np: ndarray = total_mask.to("cpu").numpy()
 
             result = (True, total_mask_np)
 
@@ -508,7 +507,7 @@ class MaskMocker(MaskGenerator):
     def append(self, data: MaskOnlyData) -> None:
         """Appends masks to respective queues"""
         self.__mask_exist.append(data[0])
-        self.__mask.append(data[1])
+        self.__mask.append(data[1].copy())
 
     def flush(self) -> None:
         """Clear all queues"""
@@ -516,7 +515,7 @@ class MaskMocker(MaskGenerator):
         self.__mask_exist.clear()
 
     def forward_once_maskonly(self, *args, **kwargs) -> MaskOnlyData:
-        """Pops frame and motion_vectors from queue simulates MotionVectorExtractor's read"""
+        """Pops mask from queue simulates MaskGenerator's forward_once_maskonly"""
         if len(self.__mask) <= 0:
             return False, numpy.empty((0))
         mask: ndarray = self.__mask.popleft()
@@ -524,6 +523,7 @@ class MaskMocker(MaskGenerator):
         return mask_exist, mask
 
     def forward_maskonly(self, *args, **kwargs) -> list[MaskOnlyData]:
+        """Pops all masks from queue simulates MaskGenerator's forward_maskonly"""
         masks: list[MaskOnlyData] = []
         while len(self.__mask) > 0:
             masks.append(self.forward_once_maskonly())
