@@ -15,51 +15,6 @@ import queue
 MotionVectorData = tuple[bool, ndarray, ndarray]
 
 
-@numba.njit(fastmath=True)
-def pre_rev_letterbox(
-    shape: tuple[int, int],
-    new_shape: int,
-    stride: int,
-    box: bool,
-) -> tuple[tuple[int, int], tuple[int, int, int, int]]:
-    # Scale ratio (new / old)
-    r = max(shape)
-    r = new_shape / r
-
-    # Compute padding
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw, dh = new_shape - new_unpad[0], new_shape - new_unpad[1]  # wh padding
-    if not box:
-        dw, dh = dw % stride, dh % stride  # wh padding
-    dw /= 2  # divide padding into 2 sides
-    dh /= 2
-
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-
-    return new_unpad, (top, bottom, left, right)
-
-
-def rev_letterbox(
-        img: ndarray,
-        new_shape: int = 640,
-        color: tuple[int, ...] = (114, 114, 114),
-        stride: int = 32,
-        box: bool = False
-):
-    # Resize and pad image while meeting stride-multiple constraints
-    shape = img.shape[:2]  # current shape [height, width]
-
-    new_unpad, (top, bottom, left, right) = pre_rev_letterbox(
-        shape, new_shape, stride, box
-    )
-
-    if shape[::-1] != new_unpad:  # resize
-        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_NEAREST)  # switch to NEAREST for faster and sharper interp
-    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
-    return img
-
-
 class MotionVectorExtractor:
     """Motion vector extractor processes motion vector from video capturer"""
 
@@ -162,6 +117,51 @@ class MotionVectorExtractor:
 
         return motion_vectors
 
+    @staticmethod
+    @numba.njit(fastmath=True)
+    def __letterbox_core(
+        shape: tuple[int, int],
+        new_shape: int,
+        stride: int,
+        box: bool,
+    ) -> tuple[tuple[int, int], tuple[int, int, int, int]]:
+        # Scale ratio (new / old)
+        r = max(shape)
+        r = new_shape / r
+
+        # Compute padding
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+        dw, dh = new_shape - new_unpad[0], new_shape - new_unpad[1]  # wh padding
+        if not box:
+            dw, dh = dw % stride, dh % stride  # wh padding
+        dw /= 2  # divide padding into 2 sides
+        dh /= 2
+
+        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
+        return new_unpad, (top, bottom, left, right)
+
+    @staticmethod
+    def letterbox(
+            img: ndarray,
+            new_shape: int = 640,
+            color: tuple[int, ...] = (114, 114, 114),
+            stride: int = 32,
+            box: bool = False
+    ):
+        # Resize and pad image while meeting stride-multiple constraints
+        shape = img.shape[:2]  # current shape [height, width]
+
+        new_unpad, (top, bottom, left, right) = MotionVectorExtractor.__letterbox_core(
+            shape, new_shape, stride, box
+        )
+
+        if shape[::-1] != new_unpad:  # resize
+            img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_NEAREST)  # switch to NEAREST for faster and sharper interp
+        img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+        return img
+
     def read(self) -> MotionVectorData:
         """Read and processes next frame"""
 
@@ -183,7 +183,7 @@ class MotionVectorExtractor:
             self.__initialized: bool = True
 
         if self.__letterboxed:
-            frame = rev_letterbox(
+            frame = MotionVectorExtractor.letterbox(
                 frame,
                 self.__new_shape,
                 self.__color[:-2],
@@ -206,7 +206,7 @@ class MotionVectorExtractor:
             self.__last_motion_vectors = motion_vectors
 
         if self.__letterboxed:
-            motion_vectors = rev_letterbox(
+            motion_vectors = MotionVectorExtractor.letterbox(
                 self.__last_motion_vectors,
                 self.__new_shape,
                 self.__color[-2:],

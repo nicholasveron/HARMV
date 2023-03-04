@@ -72,7 +72,7 @@ while(True):
         decoder.stop()
         break
 
-    mask_data = yolo_maskgen.forward_once_maskonly(fr)
+    mask_data = yolo_maskgen.forward_once_with_mcbb(fr)
     mock_maskgen.append(mask_data)
 
     if len(last_fr.shape) == 1:
@@ -97,10 +97,13 @@ while(True):
     fl_x = fl[..., 0]
     fl_y = fl[..., 1]
 
+    mcbb = mask_data[2]
     mask_data = mask_data[1]
     mask_data_uint = (mask_data.astype(numpy.uint8)*255)
 
     mf = numpy.dstack((mask_data_uint, mask_data_uint, mask_data_uint))
+
+    fr = MaskGenerator.crop_to_bb_and_rescale(fr, mcbb)
 
     # Display the resulting frame
 
@@ -198,7 +201,7 @@ while(True):
         decoder.stop()
         break
 
-    mask_data = yolo_maskgen.forward_once_maskonly(fr)
+    mask_data = yolo_maskgen.forward_once_with_mcbb(fr)
 
     if len(last_fr.shape) == 1:
         last_fr = fr.copy()
@@ -212,10 +215,13 @@ while(True):
     fl_x = fl[..., 0]
     fl_y = fl[..., 1]
 
+    mcbb = mask_data[2]
     mask_data = mask_data[1]
     mask_data_uint = (mask_data.astype(numpy.uint8)*255)
 
     mf = numpy.dstack((mask_data_uint, mask_data_uint, mask_data_uint))
+
+    fr = MaskGenerator.crop_to_bb_and_rescale(fr, mcbb)
 
     # Display the resulting frame
 

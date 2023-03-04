@@ -14,126 +14,6 @@ from collections import deque
 OpticalFlowData = ndarray
 
 
-@numba.njit(fastmath=True, parallel=True)
-def generate_overlap_grid_core(
-    image_list: ndarray,
-    scale: int = 4
-) -> tuple[ndarray, int, int]:
-    image_n, image_h, image_w, image_c = image_list.shape
-    grid_h: int = image_h//scale
-    grid_w: int = image_w//scale
-    h_shift: int = grid_h // 2
-    w_shift: int = grid_w // 2
-    grid_n: int = (scale**2) + ((scale-1)**2)
-
-    grid_container = numpy.zeros((
-        grid_n,
-        image_n,
-        grid_h,
-        grid_w,
-        image_c
-    ), dtype=image_list.dtype)
-
-    # unshifted
-    vertical_split_unshifted: list[ndarray] = numpy.split(image_list, (scale), axis=1)
-    for i in numba.prange(scale):
-        horizontal_split_unshifted: list[ndarray] = numpy.split(vertical_split_unshifted[i], (scale), axis=2)
-        for j in numba.prange(scale):
-            idx: int = (i*scale) + j
-            grid_container[idx] = horizontal_split_unshifted[j]
-
-    # shifted
-    image_shifted: ndarray = image_list[:, h_shift:-h_shift, w_shift:-w_shift]
-
-    vertical_split_shifted: list[ndarray] = numpy.split(image_shifted, (scale-1), axis=1)
-    for i in numba.prange(scale-1):
-        horizontal_split_shifted: list[ndarray] = numpy.split(vertical_split_shifted[i], (scale-1), axis=2)
-        for j in numba.prange(scale-1):
-            idx: int = (i*(scale-1)) + j + scale ** 2
-            grid_container[idx] = horizontal_split_shifted[j]
-
-    return grid_container, image_h, image_w
-
-
-def generate_overlap_grid(
-    image_list: ndarray,
-    scale: int = 4
-) -> ndarray:
-
-    grids, image_h, image_w = generate_overlap_grid_core(image_list, scale)
-
-    scaled: list[list[ndarray]] = []
-    for img_tuple in grids:
-        resized_img_tuple = []
-        for img in img_tuple:
-            resized_img_tuple.append(cv2.resize(img, (image_w, image_h), interpolation=cv2.INTER_NEAREST))
-        scaled.append(resized_img_tuple)
-
-    return numpy.array(scaled)
-
-
-@numba.njit(fastmath=True, parallel=True)
-def reconstruct_overlap_grid_core(
-    resized_overlap_grid: ndarray,
-    overlap_grid_shape: tuple[int, ...],
-    scale: int = 4
-) -> ndarray:
-    grid_n, image_n, image_h, image_w, image_c = overlap_grid_shape
-    grid_h: int = image_h // scale
-    grid_w: int = image_w // scale
-    h_shift: int = grid_h // 2
-    w_shift: int = grid_w // 2
-
-    # recreate base image
-    base_image: ndarray = numpy.zeros((image_n, image_h, image_w, image_c), dtype=resized_overlap_grid.dtype)
-
-    for i in numba.prange(grid_n):
-        if i < scale ** 2:
-            # if reading unshifted apply normally
-            x_sta: int = (i % scale) * grid_w
-            y_sta: int = (i // scale) * grid_h
-            x_end: int = x_sta + grid_w
-            y_end: int = y_sta + grid_h
-            base_image[:, y_sta:y_end, x_sta:x_end] = resized_overlap_grid[i]
-        else:
-            # if reading shifted, replace if absolute value is bigger
-            i_sh: int = i - scale**2
-            x_sta: int = (i_sh % (scale-1)) * grid_w + w_shift
-            y_sta: int = (i_sh // (scale-1)) * grid_h + h_shift
-
-            for y_off in numba.prange(grid_h):
-                y_tar: int = y_sta + y_off
-                for x_off in numba.prange(grid_w):
-                    x_tar: int = x_sta + x_off
-                    for img_n in numba.prange(image_n):
-                        for chan_n in numba.prange(image_c):
-                            curr_val = base_image[img_n, y_tar, x_tar, chan_n]
-                            targ_val = resized_overlap_grid[i, img_n, y_off, x_off, chan_n]
-                            if abs(targ_val) > abs(curr_val):
-                                base_image[img_n, y_tar, x_tar, chan_n] = targ_val
-
-    return base_image
-
-
-def reconstruct_overlap_grid(
-    overlap_grid: ndarray,
-    scale: int = 4
-):
-    _, _, image_h, image_w, _ = overlap_grid.shape
-    grid_h: int = image_h // scale
-    grid_w: int = image_w // scale
-
-    resized_overlap_grid: list[list[ndarray]] = []
-    for img_tuple in overlap_grid:
-        resized_img_tuple = [
-            cv2.resize(x, (grid_w, grid_h), interpolation=cv2.INTER_NEAREST)
-            for x in img_tuple
-        ]
-        resized_overlap_grid.append(resized_img_tuple)
-
-    return reconstruct_overlap_grid_core(numpy.array(resized_overlap_grid), overlap_grid.shape, scale)
-
-
 class OpticalFlowGenerator:
     """Optical Flow Generator generates optical flow from two consecutive frames using selected model"""
 
@@ -184,6 +64,126 @@ class OpticalFlowGenerator:
         self.__half_rgb: int = 128
 
         print(f"Optical flow model ({self.__model_type} -> {self.__model_pretrained}) initialized")
+
+    @staticmethod
+    @numba.njit(fastmath=True, parallel=True)
+    def __generate_overlap_grid_core(
+        image_list: ndarray,
+        scale: int = 4
+    ) -> tuple[ndarray, int, int]:
+        image_n, image_h, image_w, image_c = image_list.shape
+        grid_h: int = image_h//scale
+        grid_w: int = image_w//scale
+        h_shift: int = grid_h // 2
+        w_shift: int = grid_w // 2
+        grid_n: int = (scale**2) + ((scale-1)**2)
+
+        grid_container = numpy.zeros((
+            grid_n,
+            image_n,
+            grid_h,
+            grid_w,
+            image_c
+        ), dtype=image_list.dtype)
+
+        # unshifted
+        vertical_split_unshifted: list[ndarray] = numpy.split(image_list, (scale), axis=1)
+        for i in numba.prange(scale):
+            horizontal_split_unshifted: list[ndarray] = numpy.split(vertical_split_unshifted[i], (scale), axis=2)
+            for j in numba.prange(scale):
+                idx: int = (i*scale) + j
+                grid_container[idx] = horizontal_split_unshifted[j]
+
+        # shifted
+        image_shifted: ndarray = image_list[:, h_shift:-h_shift, w_shift:-w_shift]
+
+        vertical_split_shifted: list[ndarray] = numpy.split(image_shifted, (scale-1), axis=1)
+        for i in numba.prange(scale-1):
+            horizontal_split_shifted: list[ndarray] = numpy.split(vertical_split_shifted[i], (scale-1), axis=2)
+            for j in numba.prange(scale-1):
+                idx: int = (i*(scale-1)) + j + scale ** 2
+                grid_container[idx] = horizontal_split_shifted[j]
+
+        return grid_container, image_h, image_w
+
+    @staticmethod
+    def generate_overlap_grid(
+        image_list: ndarray,
+        scale: int = 4
+    ) -> ndarray:
+
+        grids, image_h, image_w = OpticalFlowGenerator.__generate_overlap_grid_core(image_list, scale)
+
+        scaled: list[list[ndarray]] = []
+        for img_tuple in grids:
+            resized_img_tuple = []
+            for img in img_tuple:
+                resized_img_tuple.append(cv2.resize(img, (image_w, image_h), interpolation=cv2.INTER_NEAREST))
+            scaled.append(resized_img_tuple)
+
+        return numpy.array(scaled)
+
+    @staticmethod
+    @numba.njit(fastmath=True, parallel=True)
+    def __reconstruct_overlap_grid_core(
+        resized_overlap_grid: ndarray,
+        overlap_grid_shape: tuple[int, ...],
+        scale: int = 4
+    ) -> ndarray:
+        grid_n, image_n, image_h, image_w, image_c = overlap_grid_shape
+        grid_h: int = image_h // scale
+        grid_w: int = image_w // scale
+        h_shift: int = grid_h // 2
+        w_shift: int = grid_w // 2
+
+        # recreate base image
+        base_image: ndarray = numpy.zeros((image_n, image_h, image_w, image_c), dtype=resized_overlap_grid.dtype)
+
+        for i in numba.prange(grid_n):
+            if i < scale ** 2:
+                # if reading unshifted apply normally
+                x_sta: int = (i % scale) * grid_w
+                y_sta: int = (i // scale) * grid_h
+                x_end: int = x_sta + grid_w
+                y_end: int = y_sta + grid_h
+                base_image[:, y_sta:y_end, x_sta:x_end] = resized_overlap_grid[i]
+            else:
+                # if reading shifted, replace if absolute value is bigger
+                i_sh: int = i - scale**2
+                x_sta: int = (i_sh % (scale-1)) * grid_w + w_shift
+                y_sta: int = (i_sh // (scale-1)) * grid_h + h_shift
+
+                for y_off in numba.prange(grid_h):
+                    y_tar: int = y_sta + y_off
+                    for x_off in numba.prange(grid_w):
+                        x_tar: int = x_sta + x_off
+                        for img_n in numba.prange(image_n):
+                            for chan_n in numba.prange(image_c):
+                                curr_val = base_image[img_n, y_tar, x_tar, chan_n]
+                                targ_val = resized_overlap_grid[i, img_n, y_off, x_off, chan_n]
+                                if abs(targ_val) > abs(curr_val):
+                                    base_image[img_n, y_tar, x_tar, chan_n] = targ_val
+
+        return base_image
+
+    @staticmethod
+    def reconstruct_overlap_grid(
+        overlap_grid: ndarray,
+        scale: int = 4
+    ):
+        _, _, image_h, image_w, _ = overlap_grid.shape
+        grid_h: int = image_h // scale
+        grid_w: int = image_w // scale
+
+        resized_overlap_grid: list[list[ndarray]] = []
+        for img_tuple in overlap_grid:
+            resized_img_tuple = [
+                cv2.resize(x, (grid_w, grid_h), interpolation=cv2.INTER_NEAREST)
+                for x in img_tuple
+            ]
+            resized_overlap_grid.append(resized_img_tuple)
+
+        return OpticalFlowGenerator.__reconstruct_overlap_grid_core(numpy.array(resized_overlap_grid), overlap_grid.shape, scale)
 
     def __first_input(self, model_input_1: ndarray, model_input_2: ndarray) -> None:
 
@@ -243,10 +243,10 @@ class OpticalFlowGenerator:
     def forward_once_with_overlap_grid(self, image_1: ndarray, image_2: ndarray, scale: int = 4) -> OpticalFlowData:
         """Generate optical flow from two consecutive frames using overlap grid"""
         image_pair: ndarray = numpy.array((image_1, image_2))
-        overlap_grid: ndarray = generate_overlap_grid(image_pair, scale)
+        overlap_grid: ndarray = OpticalFlowGenerator.generate_overlap_grid(image_pair, scale)
         optical_flows: list[OpticalFlowData] = self.forward(overlap_grid)  # type:ignore
         optical_flows_grid: ndarray = numpy.array(optical_flows)[:, None, ...]
-        optical_flows_reconstruct: ndarray = reconstruct_overlap_grid(optical_flows_grid, scale)
+        optical_flows_reconstruct: ndarray = OpticalFlowGenerator.reconstruct_overlap_grid(optical_flows_grid, scale)
         return optical_flows_reconstruct[-1, ...]
 
 
