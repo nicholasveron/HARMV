@@ -236,7 +236,7 @@ class MotionVectorExtractorProcessSpawner:
                  path: str,
                  bound: int = 32,
                  raw_motion_vectors: bool = False,
-                 update_rate: int = 60,
+                 update_rate: int = -1,
                  camera_realtime: bool = False,
                  camera_update_rate: int = 60,
                  camera_buffer_size: int = 0,
@@ -250,7 +250,7 @@ class MotionVectorExtractorProcessSpawner:
         self.__path: str = path
         self.__bound: int = bound
         self.__raw_motion_vectors: bool = raw_motion_vectors
-        self.__update_rate = update_rate
+        self.__update_rate: int = camera_update_rate if update_rate == -1 else update_rate
         self.__camera_realtime: bool = camera_realtime
         self.__camera_update_rate: int = camera_update_rate
         self.__camera_buffer_size: int = camera_buffer_size
@@ -279,7 +279,7 @@ class MotionVectorExtractorProcessSpawner:
                                      )
         data: MotionVectorData = mvex.read()
         self.__queue.put(data)
-        timeout_time: int = self.__update_rate*3
+        timeout_time: int = self.__update_rate*100
         while True:
             start: float = time.perf_counter()
             data = mvex.read()
@@ -391,7 +391,7 @@ class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpaw
 
         return True
 
-    def save(self, raw_motion_vector=True, bound: int = -1) -> bool:
+    def save(self, raw_motion_vectors=True, bound: int = -1) -> bool:
         """Saves frames and motion vectors in queues to file and flushes the queue"""
         if self.FRAME_PATH in self.__h5py_instance:
             del self.__h5py_instance[self.FRAME_PATH]
@@ -415,8 +415,8 @@ class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpaw
 
         self.__h5py_instance.attrs[self.FRAME_HWC_ATTR] = self.__frame[0].shape
         self.__h5py_instance.attrs[self.FRAME_COUNT_ATTR] = len(self.__frame)
-        self.__h5py_instance.attrs[self.MOTION_VECTORS_ARE_RAW_ATTR] = raw_motion_vector
-        self.__h5py_instance.attrs[self.MOTION_VECTORS_BOUND_ATTR] = bound
+        self.__h5py_instance.attrs[self.MOTION_VECTORS_ARE_RAW_ATTR] = raw_motion_vectors
+        self.__h5py_instance.attrs[self.MOTION_VECTORS_BOUND_ATTR] = -1 if raw_motion_vectors else bound
         self.__h5py_instance.attrs[self.MOTION_VECTORS_HWC_ATTR] = self.__motion_vectors[0].shape
         self.__h5py_instance.attrs[self.MOTION_VECTORS_COUNT_ATTR] = len(self.__motion_vectors)
 
