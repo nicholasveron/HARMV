@@ -23,6 +23,8 @@ class OpticalFlowGenerator:
                  bound: int = 32,
                  raw_optical_flows: bool = False,
                  optical_flow_scale: float = 10,
+                 overlap_grid_mode: bool = False,
+                 overlap_grid_scale: int = 4
                  ) -> None:
 
         print(f"Initializing optical flow model ({model_type} -> {model_pretrained})...")
@@ -59,6 +61,8 @@ class OpticalFlowGenerator:
         # bound param
         self.__optical_flow_scale: float = optical_flow_scale
         self.__raw_optical_flows: bool = raw_optical_flows
+        self.__overlap_grid_mode: bool = overlap_grid_mode
+        self.__overlap_grid_scale: int = overlap_grid_scale
         self.__bound: int = bound  # bound will be ignored if raw motion vector
         self.__inverse_rgb_2x_bound: float = 255 / (self.__bound * 2)
         self.__half_rgb: int = 128
@@ -249,6 +253,12 @@ class OpticalFlowGenerator:
         optical_flows_reconstruct: ndarray = OpticalFlowGenerator.reconstruct_overlap_grid(optical_flows_grid, scale)
         return optical_flows_reconstruct[-1, ...]
 
+    def forward_once_auto(self, image_1: ndarray, image_2: ndarray) -> OpticalFlowData:
+        """Automatically chooses forward once function based on the initial arguments"""
+        if self.__overlap_grid_mode:
+            return self.forward_once_with_overlap_grid(image_1, image_2, self.__overlap_grid_scale)
+        return self.forward_once(image_1, image_2)
+
 
 class OpticalFlowMocker(OpticalFlowGenerator):
     """Writes and reads generated optical flow to and from a file, mocking OpticalFlowGenerator behaviour"""
@@ -258,12 +268,16 @@ class OpticalFlowMocker(OpticalFlowGenerator):
     OPTICAL_FLOWS_BOUND_ATTR = "optical_flows_bound"
     OPTICAL_FLOWS_HWC_ATTR = "optical_flows_hwc"
     OPTICAL_FLOWS_COUNT_ATTR = "optical_flows_count"
+    OPTICAL_FLOWS_OVERLAP_GRID_MODE_ATTR = "optical_flows_overlap_grid_mode"
+    OPTICAL_FLOWS_OVERLAP_GRID_SCALE_ATTR = "optical_flows_overlap_grid_scale"
 
     def __init__(
             self,
             h5py_instance: h5py.File,
             bound: int = 32,
             raw_optical_flows: bool = False,
+            overlap_grid_mode: bool = False,
+            overlap_grid_scale: int = 4,
             *args,
             **kwargs
     ) -> None:
@@ -274,7 +288,9 @@ class OpticalFlowMocker(OpticalFlowGenerator):
         self.__raw_optical_flow: bool = raw_optical_flows
         self.__h5py_instance: h5py.File = h5py_instance
         self.__optical_flows_type = True
-        self.__optical_flows_hwc: tuple[int, int, int] = (0, 0, 0)
+        self.__optical_flows_hwc: tuple[int, int, int] = (0, 0, 0),
+        self.__overlap_grid_mode: bool = overlap_grid_mode,
+        self.__overlap_grid_scale: int = overlap_grid_scale
 
     def load(self) -> bool:
         """Loads optical_flows from file to queues"""
@@ -291,7 +307,7 @@ class OpticalFlowMocker(OpticalFlowGenerator):
 
         return True
 
-    def save(self, raw_optical_flow=True, bound: int = -1) -> bool:
+    def save(self, raw_optical_flows=True, bound: int = -1) -> bool:
         """Saves optical flows in queues to file and flushes the queue"""
         if self.OPTICAL_FLOWS_PATH in self.__h5py_instance:
             del self.__h5py_instance[self.OPTICAL_FLOWS_PATH]
@@ -303,10 +319,12 @@ class OpticalFlowMocker(OpticalFlowGenerator):
         if not numpy.allclose(self.__optical_flows, self.__h5py_instance[self.OPTICAL_FLOWS_PATH][()]):
             return False
 
-        self.__h5py_instance.attrs[self.OPTICAL_FLOWS_ARE_RAW_ATTR] = raw_optical_flow
-        self.__h5py_instance.attrs[self.OPTICAL_FLOWS_BOUND_ATTR] = bound
+        self.__h5py_instance.attrs[self.OPTICAL_FLOWS_ARE_RAW_ATTR] = raw_optical_flows
+        self.__h5py_instance.attrs[self.OPTICAL_FLOWS_BOUND_ATTR] = -1 if raw_optical_flows else bound
         self.__h5py_instance.attrs[self.OPTICAL_FLOWS_HWC_ATTR] = self.__optical_flows[0].shape
         self.__h5py_instance.attrs[self.OPTICAL_FLOWS_COUNT_ATTR] = len(self.__optical_flows)
+        self.__h5py_instance.attrs[self.OPTICAL_FLOWS_OVERLAP_GRID_MODE_ATTR] = self.__overlap_grid_mode
+        self.__h5py_instance.attrs[self.OPTICAL_FLOWS_OVERLAP_GRID_SCALE_ATTR] = self.__overlap_grid_scale
 
         self.flush()
         return True
