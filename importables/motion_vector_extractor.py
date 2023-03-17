@@ -1,16 +1,16 @@
 """Motion vector extractor processes motion vector from video capturer"""
 
-from .video_capturer import VideoCapturerProcessSpawner, FrameData
+import os
 import cv2
+import h5py
+import time
 import numba
 import numpy
-from numpy import ndarray
-import time
-from multiprocessing import Queue, Process
-import os
-from collections import deque
-import h5py
 import queue
+from numpy import ndarray
+from collections import deque
+from multiprocessing import Queue, Process
+from .video_capturer import VideoCapturerProcessSpawner, FrameData
 
 MotionVectorData = tuple[bool, ndarray, ndarray]
 

@@ -1,11 +1,11 @@
 """An improved VideoCap class to fetch realtime (even if drop frame) using multiprocessing"""
 
-from multiprocessing import Queue, Process
-import queue
-from mvextractor.videocap import VideoCap  # pylint: disable=no-name-in-module
-import time
-from numpy import ndarray
 import os
+import time
+import queue
+from numpy import ndarray
+from mvextractor.videocap import VideoCap  # pylint: disable=no-name-in-module
+from multiprocessing import Queue, Process
 
 FrameData = tuple[bool, ndarray, ndarray, str, float]
 
@@ -29,7 +29,7 @@ class VideoCapturerProcessSpawner:
             assert False, "ERROR WHILE LOADING " + self.__path
         data: FrameData = video_capturer.read()
         self.__queue.put(data)  # initialization frame
-        timeout_time: int = self.__update_rate*3
+        timeout_time: int = self.__update_rate*10
         while True:
             start: float = time.perf_counter()
             data = video_capturer.read()
