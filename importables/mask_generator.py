@@ -2,23 +2,27 @@
 # pyright: reportGeneralTypeIssues=false
 """Mask Generator generates peoples mask using YOLOv7 - Mask from bgr frames"""
 
-
+import os
 import cv2
 import h5py
 import yaml
 import numba
 import numpy
 import torch
+import nebullvm
+import speedster
 import torchvision
 from torch import Tensor
+from typing import Union, Tuple
 from numpy import ndarray
 from collections import deque
 from detectron2.structures import Boxes
 from detectron2.modeling.poolers import ROIPooler
 from detectron2.layers import paste_masks_in_image
 
-MaskOnlyData = tuple[bool, ndarray]
-MaskWithMCBB = tuple[bool, ndarray, ndarray]
+
+MaskOnlyData = Tuple[bool, ndarray]
+MaskWithMCBB = Tuple[bool, ndarray, ndarray]
 
 
 class MaskGenerator:
@@ -28,21 +32,23 @@ class MaskGenerator:
                  weight_path: str,
                  hyperparameter_path: str,
                  confidence_threshold: float,
-                 iou_threshold: float
+                 iou_threshold: float,
+                 optimize_model: bool = True,
+                 target_device: Union[str, torch.device, None] = None,
                  ) -> None:
 
         print("Initializing mask generator...")
 
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.benchmark_limit = 0
-        torch.backends.cudnn.allow_tf32 = True
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
-
         # check device capability
         self.__device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.__half_capable: bool = False  # only use full float because half causes some problems
-        # self.__half_capable: bool = self.__device.type != "cpu"
+        if target_device:
+            if isinstance(target_device, str):
+                self.__device = torch.device(target_device)
+                print("target", target_device, self.__device)
+            else:
+                self.__device = target_device
+        self.__half_capable: bool = self.__device.type == "cuda"
+        self.__dtype = torch.float16 if self.__half_capable else torch.float32
 
         # load model
         self.__model = torch.load(weight_path, map_location={
@@ -57,7 +63,7 @@ class MaskGenerator:
                 setattr(m, "recompute_scale_factor", None)
 
         # set model precision
-        self.__model = self.__model.half() if self.__half_capable else self.__model.float()
+        self.__model = self.__model.to(device=self.__device, dtype=self.__dtype)
 
         # set model to eval mode
         self.__model.eval()
@@ -81,12 +87,13 @@ class MaskGenerator:
         # other parameters
         self.__confidence_threshold: float = confidence_threshold
         self.__iou_threshold: float = iou_threshold
+        self.__optimize_model: bool = optimize_model
 
         print("Mask generator initialized")
 
     @staticmethod
     @torch.jit.script
-    def __unpack_inference(x: Tensor, bbox_w: int, bbox_h: int, bbox_pix: int) -> tuple[Tensor, Tensor, Tensor]:
+    def __unpack_inference(x: Tensor, bbox_w: int, bbox_h: int, bbox_pix: int) -> Tuple[Tensor, Tensor, Tensor]:
         inf: Tensor = x[:, :, :85]
         attn: Tensor = x[:, :, 85:1065]
         bases: Tensor = x[:, :, 1065:]
@@ -134,7 +141,7 @@ class MaskGenerator:
         multi_label: bool,
         max_wh: int,
         max_det: int
-    ) -> tuple[bool, Tensor, Tensor]:
+    ) -> Tuple[bool, Tensor, Tensor]:
         output: Tensor = torch.empty((0), device=x.device, dtype=x.dtype)
         output_mask: Tensor = torch.empty((0), device=x.device, dtype=x.dtype)
 
@@ -211,7 +218,7 @@ class MaskGenerator:
         pooler: ROIPooler,
         conf_thres: float = 0.1,
         iou_thres: float = 0.6
-    ) -> tuple[list[bool], list[Tensor], list[Tensor]]:
+    ) -> Tuple[list[bool], list[Tensor], list[Tensor]]:
         nc: int = prediction[0].shape[1] - 5  # number of classes
         xc: Tensor = prediction[..., 4] > conf_thres  # candidates
         # Settings
@@ -223,7 +230,7 @@ class MaskGenerator:
         output: list[Tensor] = []
         output_mask: list[Tensor] = []
 
-        futures: list[torch.jit.Future[tuple[bool, Tensor, Tensor]]] = []
+        futures: list[torch.jit.Future[Tuple[bool, Tensor, Tensor]]] = []
         for xi in range(len(prediction)):  # image index, image inference
             futures.append(torch.jit.fork(MaskGenerator.__loopable_nms_conf_people_only,
                                           prediction[xi],
@@ -258,7 +265,7 @@ class MaskGenerator:
         pooler: ROIPooler,
         conf_thres: float = 0.1,
         iou_thres: float = 0.6
-    ) -> tuple[bool, Tensor, Tensor]:
+    ) -> Tuple[bool, Tensor, Tensor]:
         nc: int = prediction[0].shape[1] - 5  # number of classes
         xc: Tensor = prediction[..., 4] > conf_thres  # candidates
         # Settings
@@ -284,7 +291,7 @@ class MaskGenerator:
         return found_s, output_s, output_mask_s
 
     @staticmethod
-    def __find_most_center_bb(bounding_boxes: Boxes, frame_size: tuple[int, int], grouping_range_scale: float = 1, no_merge_bounding_box=False) -> tuple[Boxes, Boxes]:
+    def __find_most_center_bb(bounding_boxes: Boxes, frame_size: Tuple[int, int], grouping_range_scale: float = 1, no_merge_bounding_box=False) -> Tuple[Boxes, Boxes]:
         # get shortest distance to middle
         center_x: int = frame_size[1]//2
         center_y: int = frame_size[0]//2
@@ -323,13 +330,37 @@ class MaskGenerator:
 
     @staticmethod
     @numba.njit(fastmath=True, parallel=True)
-    def __crop_to_bb_and_rescale_core(bounding_box: ndarray, target_size: ndarray, aggressive: bool = True) -> ndarray:
+    def bounding_box_rescale(bounding_box: ndarray, original_size: Tuple[int, int], target_size: Tuple[int, int]) -> ndarray:
+        bounding_box = bounding_box.copy()
+        width_scale: float = target_size[1] / original_size[1]
+        height_scale: float = target_size[0] / original_size[0]
+        scale_matrix: ndarray = numpy.array(
+            [
+                [width_scale, 0],
+                [0, height_scale]
+            ], dtype=bounding_box.dtype
+        )
+        xy_1_pos: ndarray = numpy.array([bounding_box[0], bounding_box[1]])
+        xy_2_pos: ndarray = numpy.array([bounding_box[2], bounding_box[3]])
+        xy_1_scaled: ndarray = numpy.zeros_like(xy_1_pos)
+        xy_2_scaled: ndarray = numpy.zeros_like(xy_2_pos)
+        numpy.dot(scale_matrix, xy_1_pos, xy_1_scaled)
+        numpy.dot(scale_matrix, xy_2_pos, xy_2_scaled)
+
+        bounding_box[0], bounding_box[1] = xy_1_scaled
+        bounding_box[2], bounding_box[3] = xy_2_scaled
+
+        return bounding_box
+
+    @staticmethod
+    @numba.njit(fastmath=True, parallel=True)
+    def bounding_box_retarget_ratio(bounding_box: ndarray, target_size: ndarray, aggressive: bool = True) -> ndarray:
         bounding_box_w: int = bounding_box[2] - bounding_box[0]
         bounding_box_h: int = bounding_box[3] - bounding_box[1]
         bounding_box_size: ndarray = numpy.array([bounding_box_h, bounding_box_w])
 
         ratios: ndarray = target_size / bounding_box_size
-        if ratios[0]-ratios[1] == 0:
+        if ratios[0] == ratios[1]:
             # if ratio already correct
             return bounding_box.astype(numpy.int64)
 
@@ -339,7 +370,8 @@ class MaskGenerator:
         if aggressive:
             # if agresive (ignoring the rounding problem)
             target_scale: float = ratios[pivot_idx]
-            delta: float = (target_size[inv_pivot_idx] / target_scale) - bounding_box_size[inv_pivot_idx]
+            scaled_target_size = target_size[inv_pivot_idx] / target_scale
+            delta: float = scaled_target_size - bounding_box_size[inv_pivot_idx]
             delta /= 2
             bounding_box[0+pivot_idx] = bounding_box[0+pivot_idx] - int(round(delta - 0.1))
             bounding_box[2+pivot_idx] = bounding_box[2+pivot_idx] + int(round(delta + 0.1))
@@ -354,16 +386,17 @@ class MaskGenerator:
 
         if target_size[pivot_idx] / bounding_box_size[pivot_idx] == 2:
             # if pivot size is exacly half
-            delta: float = target_size[inv_pivot_idx] // 2 - bounding_box_size[inv_pivot_idx]
+            scaled_target_size = target_size[inv_pivot_idx] // 2
+            delta: float = scaled_target_size - bounding_box_size[inv_pivot_idx]
             delta /= 2
             bounding_box[0+pivot_idx] = bounding_box[0+pivot_idx] - int(round(delta - 0.1))
             bounding_box[2+pivot_idx] = bounding_box[2+pivot_idx] + int(round(delta + 0.1))
             if bounding_box[0+pivot_idx] < 0:
                 bounding_box[2+pivot_idx] += abs(bounding_box[0+pivot_idx])
                 bounding_box[0+pivot_idx] = 0
-            if bounding_box[2+pivot_idx] > target_size[inv_pivot_idx]:
-                bounding_box[0+pivot_idx] -= (bounding_box[2+pivot_idx] - target_size[inv_pivot_idx])
-                bounding_box[2+pivot_idx] = target_size[inv_pivot_idx]
+            if bounding_box[2+pivot_idx] > scaled_target_size:
+                bounding_box[0+pivot_idx] -= (bounding_box[2+pivot_idx] - scaled_target_size)
+                bounding_box[2+pivot_idx] = scaled_target_size
 
             return bounding_box.astype(numpy.int64)
 
@@ -405,63 +438,113 @@ class MaskGenerator:
         return bounding_box.astype(numpy.int64)
 
     @staticmethod
-    def crop_to_bb_and_rescale(img: ndarray, bounding_box: ndarray, target_size=(-1, -1), aggressive: bool = True) -> ndarray:
+    def crop_to_bb_and_rescale(img: ndarray, bounding_box: ndarray, original_size: Tuple[int, int], target_size: Tuple[int, int] = (-1, -1), aggressive: bool = True) -> ndarray:
+        image_shape: Tuple[int, int] = img.shape[:2]
+
         if target_size == (-1, -1):
-            target_size: ndarray = numpy.array(img.shape[:2])
+            target_size: ndarray = numpy.array(image_shape)
         else:
             target_size: ndarray = numpy.array(target_size)
 
-        bounding_box = MaskGenerator.__crop_to_bb_and_rescale_core(bounding_box.astype(numpy.int16), target_size, aggressive)
+        bounding_box = MaskGenerator.bounding_box_retarget_ratio(bounding_box.astype(numpy.int16), target_size, aggressive)
 
-        if (bounding_box[-2::-1]) != target_size:
-            cropped_img: ndarray = img[int(bounding_box[1]):int(bounding_box[3]), int(bounding_box[0]):int(bounding_box[2])].copy()
+        if image_shape != original_size:
+            bounding_box = MaskGenerator.bounding_box_rescale(bounding_box.astype(numpy.float64), original_size, image_shape).astype(numpy.int16)
+
+        cropped_img: ndarray = img[int(bounding_box[1]):int(bounding_box[3]), int(bounding_box[0]):int(bounding_box[2])].copy()
+        bounding_box_w: int = bounding_box[2] - bounding_box[0]
+        bounding_box_h: int = bounding_box[3] - bounding_box[1]
+        bounding_box_size: ndarray = numpy.array([bounding_box_h, bounding_box_w])
+        if any(bounding_box_size != target_size):
             return cv2.resize(cropped_img, (target_size[1], target_size[0]), interpolation=cv2.INTER_NEAREST)
+
+        return cropped_img
 
     def __first_input(self, model_input: Tensor) -> None:
 
         print("Warming up masker model (yolov7-mask)...")
-        # trace model on first input for adaptive tracing
 
         self.__bbox_width: int = model_input.shape[-1] // 4
         self.__bbox_height: int = model_input.shape[-2] // 4
         self.__bbox_pix: int = self.__bbox_width * self.__bbox_height * 5
-        self.__target_size: int = int(((model_input.shape[-2]*model_input.shape[-1])/25600)*1575)
-        self.__offset_size: int = int(((self.__bbox_width * self.__bbox_height) / 1600) * 125)
-        self.__pad_size: int = self.__target_size - (self.__offset_size % self.__target_size)
-        self.__model.model[-1].pad_size = self.__pad_size  # type: ignore
 
-        zero_input = torch.zeros_like(model_input).to(self.__device)
-        rand_input = torch.rand_like(model_input).to(self.__device)
-        rand_2_input = torch.rand_like(model_input).to(self.__device)
+        if self.__optimize_model:
 
-        with torch.no_grad():
-            print("JIT tracing masker model (yolov7-mask)...")
-            self.__model = torch.jit.trace(
-                self.__model,
-                rand_input,
-                check_inputs=[
-                    model_input,
-                    zero_input,
-                    rand_input,
-                    rand_2_input
-                ]
-            )
+            true_device: nebullvm.tools.base.DeviceType = nebullvm.tools.base.DeviceType.GPU if self.__device.type == "cuda" else nebullvm.tools.base.DeviceType.CPU
 
-            print("Optimizing masker model (yolov7-mask)...")
-            self.__model = torch.jit.optimize_for_inference(self.__model)
+            root_folder: str = os.path.abspath("./optimized_models/masker")
+            os.makedirs(root_folder, exist_ok=True)
+            available_optimized_models = os.listdir(root_folder)
+            print("Trying to load last optimized model (yolov7-mask)...")
 
-        del zero_input
-        del rand_input
-        del rand_2_input
+            try:
+                model_loaded: bool = False
+                for optimized_models in available_optimized_models:
+                    optimized_models: str = os.path.join(root_folder, optimized_models)
+                    preload_model: speedster.BaseInferenceLearner = speedster.load_model(optimized_models)
+                    if preload_model.network_parameters.input_infos[0].size == list(model_input.shape) and preload_model.device.type == true_device:
+                        print("Last compatible optimized model found (yolov7-mask), testing...")
+                        with torch.inference_mode():
+                            preload_model(model_input)
+                            preload_model(model_input)
+                            preload_model(model_input)
+
+                        model_loaded = True
+                        self.__model = preload_model
+                        break
+
+                assert model_loaded, "Last compatible optimized model not found (yolov7-mask)"
+                print("Last optimized model successfully loaded (yolov7-mask)...")
+
+            except:
+                print("Optimizing model (yolov7-mask)...")
+                # optimize model
+                # best optimization for 3080Ti TensorRT fp16 (half), balance accuracy and memory usage with better fps
+                # [Speedster results on NVIDIA GeForce RTX 3080 Ti]
+                # Metric       Original Model    Optimized Model    Improvement
+                # -----------  ----------------  -----------------  -------------
+                # backend      PYTORCH           TensorRT
+                # latency      0.0206 sec/batch  0.0024 sec/batch   8.66x
+                # throughput   48.51 data/sec    419.93 data/sec    8.66x
+                # model size   91.27 MB          93.96 MB           0%
+                # metric drop                    0.0043
+                # techniques                     fp16
+
+                # input data
+                rand_input_data: list[Tuple[Tensor, Tuple[Tensor, ...]]] = [((torch.rand_like(model_input), ), torch.zeros(1)) for _ in range(100)]
+                preoptimize_model: speedster.BaseInferenceLearner = speedster.optimize_model(self.__model,
+                                                                                             rand_input_data,
+                                                                                             store_latencies=True,
+                                                                                             metric_drop_ths=10e-2,
+                                                                                             optimization_time="unconstrained",
+                                                                                             device=str(true_device))
+
+                with torch.inference_mode():
+                    preoptimize_model(model_input)
+                    preoptimize_model(model_input)
+                    preoptimize_model(model_input)
+
+                model_path: str = os.path.join(root_folder, f"model_{len(available_optimized_models)}")
+                speedster.save_model(preoptimize_model, model_path)
+
+                self.__model = preoptimize_model
+                print("Model optimized and saved (yolov7-mask)...")
+                del rand_input_data
+        else:
+            print("Optimizing model disabled, skipping optimization (yolov7-mask)...")
+
         torch.cuda.empty_cache()
         print(torch.cuda.memory_summary())
+        self.__model(model_input)
+        self.__model(model_input)
+        self.__model(model_input)
         self.__is_traced = True
         print("Masker model (yolov7-mask) warmed up")
 
     def forward_maskonly(self, letterboxed_image_list: list[ndarray], flip_bgr_rgb: bool = True) -> list[MaskOnlyData]:
         """Generate detected people mask from letterboxed image provided"""
 
-        tensor_input: Tensor = torch.as_tensor(numpy.array(letterboxed_image_list), device=self.__device)
+        tensor_input: Tensor = torch.as_tensor(numpy.array(letterboxed_image_list), device=self.__device, dtype=self.__dtype)
         tensor_input = tensor_input.permute(0, 3, 1, 2)
 
         if flip_bgr_rgb:
@@ -469,14 +552,14 @@ class MaskGenerator:
 
         tensor_input = tensor_input/255
 
-        # only use full float because half causes some problems
-        # tensor_input = tensor_input.half() if self.__half_capable else tensor_input.float()
-
         if not self.__is_traced:
             self.__first_input(tensor_input)
 
-        with torch.no_grad():
-            yolo_output = self.__model.forward(tensor_input).detach()  # type:ignore
+        with torch.inference_mode():
+            yolo_output: Tensor = self.__model(tensor_input)
+
+        if self.__optimize_model:
+            yolo_output = yolo_output[0]
 
         inference_output, attenuation, bases = MaskGenerator.__unpack_inference(
             yolo_output,
@@ -521,7 +604,7 @@ class MaskGenerator:
 
     def forward_once_maskonly(self, letterboxed_image: ndarray, flip_bgr_rgb: bool = True) -> MaskOnlyData:
         """Generate detected people mask from letterboxed image provided"""
-        tensor_input: Tensor = torch.as_tensor(letterboxed_image, device=self.__device)
+        tensor_input: Tensor = torch.as_tensor(letterboxed_image, device=self.__device, dtype=self.__dtype)
 
         tensor_input = tensor_input.permute(2, 0, 1)
 
@@ -532,14 +615,14 @@ class MaskGenerator:
 
         tensor_input = tensor_input/255
 
-        # only use full float because half causes some problems
-        # tensor_input = tensor_input.half() if self.__half_capable else tensor_input.float()
-
         if not self.__is_traced:
             self.__first_input(tensor_input)
 
-        with torch.no_grad():
-            yolo_output = self.__model.forward(tensor_input).detach()  # type:ignore
+        with torch.inference_mode():
+            yolo_output: Tensor = self.__model(tensor_input)
+
+        if self.__optimize_model:
+            yolo_output = yolo_output[0]
 
         inference_output, attenuation, bases = MaskGenerator.__unpack_inference(
             yolo_output,
@@ -581,7 +664,7 @@ class MaskGenerator:
 
     def forward_once_with_mcbb(self, letterboxed_image: ndarray, flip_bgr_rgb: bool = True, grouping_range_scale: float = 1, no_merge_bounding_box=False) -> MaskWithMCBB:
         """Generate detected people mask from letterboxed image provided with most center bounding box"""
-        tensor_input: Tensor = torch.as_tensor(letterboxed_image, device=self.__device)
+        tensor_input: Tensor = torch.as_tensor(letterboxed_image, device=self.__device, dtype=self.__dtype)
 
         tensor_input = tensor_input.permute(2, 0, 1)
 
@@ -592,14 +675,14 @@ class MaskGenerator:
 
         tensor_input = tensor_input/255
 
-        # only use full float because half causes some problems
-        # tensor_input = tensor_input.half() if self.__half_capable else tensor_input.float()
-
         if not self.__is_traced:
             self.__first_input(tensor_input)
 
-        with torch.no_grad():
-            yolo_output = self.__model.forward(tensor_input).detach()  # type:ignore
+        with torch.inference_mode():
+            yolo_output: Tensor = self.__model(tensor_input)
+
+        if self.__optimize_model:
+            yolo_output = yolo_output[0]
 
         inference_output, attenuation, bases = MaskGenerator.__unpack_inference(
             yolo_output,
@@ -636,7 +719,8 @@ class MaskGenerator:
             total_mask_np: ndarray = total_mask.to("cpu").numpy()
 
             most_center_bounding_box, bboxes = MaskGenerator.__find_most_center_bb(bboxes, (h, w), grouping_range_scale, no_merge_bounding_box)
-            most_center_bounding_box_np: ndarray = numpy.around((most_center_bounding_box.tensor.to("cpu").numpy()[0].astype(numpy.uint16)))
+            most_center_bounding_box_tensor: Tensor = torch.clamp_min(most_center_bounding_box.tensor, 0)
+            most_center_bounding_box_np: ndarray = numpy.around((most_center_bounding_box_tensor.to("cpu").numpy()[0].astype(numpy.uint16)))
 
             result = (True, total_mask_np, most_center_bounding_box_np)
 
