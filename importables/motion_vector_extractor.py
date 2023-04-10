@@ -24,12 +24,7 @@ class MotionVectorExtractor:
                  raw_motion_vectors: bool = False,
                  camera_realtime: bool = False,
                  camera_update_rate: int = 60,
-                 camera_buffer_size: int = 0,
-                 letterboxed: bool = False,
-                 new_shape: int = 640,
-                 box: bool = False,
-                 color: tuple[int, int, int, int, int] = (114, 114, 114, 128, 128),
-                 stride: int = 32,
+                 camera_buffer_size: int = 0
                  ) -> None:
 
         # initiate threaded mvextractor VideoCapture
@@ -45,15 +40,6 @@ class MotionVectorExtractor:
         self.__bound: int = bound  # bound will be ignored if raw motion vector
         self.__inverse_rgb_2x_bound: float = 255 / (self.__bound * 2)
         self.__half_rgb: int = 128
-
-        # letterbox params
-        self.__letterboxed: bool = letterboxed
-        self.__new_shape: int = new_shape
-        self.__color: tuple[int, int, int, int, int] = color
-        if raw_motion_vectors:
-            self.__color = (*color[:-2], 0, 0)
-        self.__stride: int = stride
-        self.__box: bool = box
 
         # shared memory
         self.__initialized: bool = False
@@ -99,7 +85,8 @@ class MotionVectorExtractor:
             half_rgb: int,
             inverse_rgb_2x_bound: float
     ) -> ndarray:
-        """Static method to rescale raw motion vector data to 0 255 uint8"""
+        """THIS FUNCTION CHANGES THE ORIGINAL INPUT 
+        Static method to rescale raw motion vector data to 0 255 uint8"""
         # rescale motion vector with bound to 0 255
         # bound is refactored to precalculate most of the constant
         # translate to 255 first from 2*bound
@@ -116,51 +103,6 @@ class MotionVectorExtractor:
         motion_vectors = motion_vectors.astype(numpy.uint8)
 
         return motion_vectors
-
-    @staticmethod
-    @numba.njit(fastmath=True)
-    def __letterbox_core(
-        shape: tuple[int, int],
-        new_shape: int,
-        stride: int,
-        box: bool,
-    ) -> tuple[tuple[int, int], tuple[int, int, int, int]]:
-        # Scale ratio (new / old)
-        r = max(shape)
-        r = new_shape / r
-
-        # Compute padding
-        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-        dw, dh = new_shape - new_unpad[0], new_shape - new_unpad[1]  # wh padding
-        if not box:
-            dw, dh = dw % stride, dh % stride  # wh padding
-        dw /= 2  # divide padding into 2 sides
-        dh /= 2
-
-        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-
-        return new_unpad, (top, bottom, left, right)
-
-    @staticmethod
-    def letterbox(
-            img: ndarray,
-            new_shape: int = 640,
-            color: tuple[int, ...] = (114, 114, 114),
-            stride: int = 32,
-            box: bool = False
-    ):
-        # Resize and pad image while meeting stride-multiple constraints
-        shape = img.shape[:2]  # current shape [height, width]
-
-        new_unpad, (top, bottom, left, right) = MotionVectorExtractor.__letterbox_core(
-            shape, new_shape, stride, box
-        )
-
-        if shape[::-1] != new_unpad:  # resize
-            img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_NEAREST)  # switch to NEAREST for faster and sharper interp
-        img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
-        return img
 
     def read(self) -> MotionVectorData:
         """Read and processes next frame"""
@@ -182,15 +124,6 @@ class MotionVectorExtractor:
                 self.__last_motion_vectors: ndarray = numpy.ones((*self.__res, 2), dtype=numpy.uint8) * 128
             self.__initialized: bool = True
 
-        if self.__letterboxed:
-            frame = MotionVectorExtractor.letterbox(
-                frame,
-                self.__new_shape,
-                self.__color[:-2],
-                self.__stride,
-                self.__box
-            )
-
         exist, motion_vectors = self.__process_mv(
             fr_data[2],
             self.__res
@@ -203,18 +136,10 @@ class MotionVectorExtractor:
                     self.__half_rgb,
                     self.__inverse_rgb_2x_bound
                 )
-            self.__last_motion_vectors = motion_vectors
+            self.__last_motion_vectors = motion_vectors.copy()
 
-        if self.__letterboxed:
-            motion_vectors = MotionVectorExtractor.letterbox(
-                self.__last_motion_vectors,
-                self.__new_shape,
-                self.__color[-2:],
-                self.__stride,
-                self.__box
-            )
 
-        return True, frame, motion_vectors
+        return True, frame, self.__last_motion_vectors.copy()
 
     def stop(self) -> "MotionVectorExtractor":
         """Stop the video capturer thread"""
@@ -228,122 +153,7 @@ class MotionVectorExtractor:
     def __del__(self) -> None:
         self.stop()
 
-
-class MotionVectorExtractorProcessSpawner:
-    """Threaded version of MotionVectorExtractor class to fetch realtime (even if drop frame)"""
-
-    def __init__(self,
-                 path: str,
-                 bound: int = 32,
-                 raw_motion_vectors: bool = False,
-                 update_rate: int = -1,
-                 camera_realtime: bool = False,
-                 camera_update_rate: int = 60,
-                 camera_buffer_size: int = 0,
-                 letterboxed: bool = False,
-                 new_shape: int = 640,
-                 box: bool = False,
-                 color: tuple[int, int, int, int, int] = (114, 114, 114, 128, 128),
-                 stride: int = 32,
-                 ) -> None:
-        self.__queue: Queue = Queue(maxsize=1)
-        self.__path: str = path
-        self.__bound: int = bound
-        self.__raw_motion_vectors: bool = raw_motion_vectors
-        self.__update_rate: int = camera_update_rate if update_rate == -1 else update_rate
-        self.__camera_realtime: bool = camera_realtime
-        self.__camera_update_rate: int = camera_update_rate
-        self.__camera_buffer_size: int = camera_buffer_size
-        self.__letterboxed: bool = letterboxed
-        self.__new_shape: int = new_shape
-        self.__color: tuple[int, ...] = color
-        self.__stride: int = stride
-        self.__box: bool = box
-        self.__delay: float = 1/update_rate
-        self.__run: bool = False
-        self.__first_read: bool = False
-
-    def __refresh(self) -> None:
-        count_timeout: int = 0
-        mvex = MotionVectorExtractor(self.__path,
-                                     self.__bound,
-                                     self.__raw_motion_vectors,
-                                     self.__camera_realtime,
-                                     self.__camera_update_rate,
-                                     self.__camera_buffer_size,
-                                     self.__letterboxed,
-                                     self.__new_shape,
-                                     self.__box,
-                                     self.__color,
-                                     self.__stride
-                                     )
-        data: MotionVectorData = mvex.read()
-        self.__queue.put(data)
-        timeout_time: int = self.__update_rate*100
-        while True:
-            start: float = time.perf_counter()
-            data = mvex.read()
-            try:
-                self.__queue.put(data, block=not self.__camera_realtime)
-            except queue.Full:
-                count_timeout += 1
-                if count_timeout >= timeout_time:  # how many frames until it kills itself
-                    print("Motion vector extractor timeout, killing process...")
-                    mvex.stop()
-                    mvex.suicide()
-                    return
-            else:
-                count_timeout = 0
-            if not data[0]:
-                print("Motion vector extractor source empty, killing process...")
-                mvex.stop()
-                mvex.suicide()
-                return
-            end: float = time.perf_counter()
-            time.sleep(max(0, self.__delay - (end - start)))
-
-    def read(self) -> MotionVectorData:
-        """Pulls motion vector data from motion vector process and returns it"""
-        if self.__run and self.__first_read:
-            if not self.__data[0]:
-                print("Read: Motion vector extractor source empty, killing process...")
-                self.stop(False)
-                return self.__data
-            try:
-                self.__data = self.__queue.get(block=not self.__camera_realtime)
-            except queue.Empty:
-                _ = ""
-        self.__first_read = True
-        return self.__data
-
-    def start(self) -> "MotionVectorExtractorProcessSpawner":
-        """Spawns new process for motion vector extractor"""
-        print("Spawning and initializing motion vector extractor process...")
-        self.__process: Process = Process(target=self.__refresh, args=(), daemon=False)
-        self.__process.start()
-        self.__data: MotionVectorData = self.__queue.get()
-        self.__run = True
-        print("Motion vector extractor process started")
-        return self
-
-    def stop(self, manual: bool = True) -> "MotionVectorExtractorProcessSpawner":
-        """Kill existing process for motion vector extractor"""
-        if self.__run:
-            print("Stopping motion vector extractor process...")
-            if not self.__camera_realtime and manual:  # manual trigger to prevent auto kill recursion
-                while self.__data[0]:
-                    self.read()
-                os.kill(self.__process.pid, 9)  # type: ignore
-            self.__run = False
-            self.__first_read = False
-            print("Motion vector extractor process stopped")
-        return self
-
-    def __del__(self):
-        self.stop()
-
-
-class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpawner):
+class MotionVectorMocker(MotionVectorExtractor):
     """Writes and reads processed motion vector to and from a file, mocking MotionVectorExtractor behaviour"""
 
     FRAME_PATH = "frames"
@@ -448,10 +258,6 @@ class MotionVectorMocker(MotionVectorExtractor, MotionVectorExtractorProcessSpaw
         self.__frame.clear()
         self.__motion_vectors.clear()
         self.__motion_vectors_type = True
-
-    def start(self) -> "MotionVectorMocker":
-        """Ignored functions to eliminate mock error"""
-        return self
 
     def stop(self) -> "MotionVectorMocker":
         """Ignored functions to eliminate mock error"""

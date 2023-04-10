@@ -33,8 +33,12 @@ class MaskGenerator:
                  hyperparameter_path: str,
                  confidence_threshold: float,
                  iou_threshold: float,
+                 target_input_size: int,
                  optimize_model: bool = True,
                  target_device: Union[str, torch.device, None] = None,
+                 letterbox_stride: int = 32,
+                 letterbox_box_mode: bool = False,
+                 letterbox_color: tuple[int, int, int] = (114, 114, 114),
                  ) -> None:
 
         print("Initializing mask generator...")
@@ -88,6 +92,12 @@ class MaskGenerator:
         self.__confidence_threshold: float = confidence_threshold
         self.__iou_threshold: float = iou_threshold
         self.__optimize_model: bool = optimize_model
+
+        # letterbox params
+        self.__target_input_size: int = target_input_size
+        self.__letterbox_stride: int = letterbox_stride
+        self.__letterbox_box_mode: bool = letterbox_box_mode
+        self.__letterbox_color: tuple[int, int, int] = letterbox_color
 
         print("Mask generator initialized")
 
@@ -291,7 +301,12 @@ class MaskGenerator:
         return found_s, output_s, output_mask_s
 
     @staticmethod
-    def __find_most_center_bb(bounding_boxes: Boxes, frame_size: Tuple[int, int], grouping_range_scale: float = 1, no_merge_bounding_box=False) -> Tuple[Boxes, Boxes]:
+    def __find_most_center_bb(
+        bounding_boxes: Boxes,
+        frame_size: Tuple[int, int],
+        grouping_range_scale: float = 1,
+        no_merge_bounding_box=False
+    ) -> Tuple[Boxes, Boxes]:
         # get shortest distance to middle
         center_x: int = frame_size[1]//2
         center_y: int = frame_size[0]//2
@@ -330,7 +345,14 @@ class MaskGenerator:
 
     @staticmethod
     @numba.njit(fastmath=True, parallel=True)
-    def bounding_box_rescale(bounding_box: ndarray, original_size: Tuple[int, int], target_size: Tuple[int, int]) -> ndarray:
+    def bounding_box_resize(
+        bounding_box: ndarray,
+        original_size: Tuple[int, int],
+        target_size: Tuple[int, int]
+    ) -> ndarray:
+        """Resizes bounding box from original size (h,w) to target size(h,w).
+        Bounding box input must in dtype float64, then result convert to int16"""
+
         bounding_box = bounding_box.copy()
         width_scale: float = target_size[1] / original_size[1]
         height_scale: float = target_size[0] / original_size[0]
@@ -354,7 +376,14 @@ class MaskGenerator:
 
     @staticmethod
     @numba.njit(fastmath=True, parallel=True)
-    def bounding_box_retarget_ratio(bounding_box: ndarray, target_size: ndarray, aggressive: bool = True) -> ndarray:
+    def bounding_box_reshape_to_ratio(
+        bounding_box: ndarray,
+        target_size: ndarray,
+        aggressive: bool = True
+    ) -> ndarray:
+        """Reshapes bounding box to target size's (h,w) ratio.
+        Bounding box input must in dtype int16"""
+
         bounding_box_w: int = bounding_box[2] - bounding_box[0]
         bounding_box_h: int = bounding_box[3] - bounding_box[1]
         bounding_box_size: ndarray = numpy.array([bounding_box_h, bounding_box_w])
@@ -438,27 +467,130 @@ class MaskGenerator:
         return bounding_box.astype(numpy.int64)
 
     @staticmethod
-    def crop_to_bb_and_rescale(img: ndarray, bounding_box: ndarray, original_size: Tuple[int, int], target_size: Tuple[int, int] = (-1, -1), aggressive: bool = True) -> ndarray:
-        image_shape: Tuple[int, int] = img.shape[:2]
+    def crop_to_bb_and_resize(
+        image: ndarray,
+        bounding_box: ndarray,
+        original_size: Tuple[int, int],
+        target_size: Tuple[int, int] = (-1, -1),
+        aggressive: bool = True
+    ) -> ndarray:
+        """Crops image using bounding box, and resizes the image back to original size (h,w) or target size (h,w)"""
+
+        image_size: Tuple[int, int] = image.shape[:2]
 
         if target_size == (-1, -1):
-            target_size: ndarray = numpy.array(image_shape)
+            target_size: ndarray = numpy.array(image_size)
         else:
             target_size: ndarray = numpy.array(target_size)
 
-        bounding_box = MaskGenerator.bounding_box_retarget_ratio(bounding_box.astype(numpy.int16), target_size, aggressive)
+        bounding_box = MaskGenerator.bounding_box_reshape_to_ratio(bounding_box.astype(numpy.int16), target_size, aggressive)
 
-        if image_shape != original_size:
-            bounding_box = MaskGenerator.bounding_box_rescale(bounding_box.astype(numpy.float64), original_size, image_shape).astype(numpy.int16)
+        if image_size != original_size:
+            bounding_box = MaskGenerator.bounding_box_resize(bounding_box.astype(numpy.float64), original_size, image_size).astype(numpy.int16)
 
-        cropped_img: ndarray = img[int(bounding_box[1]):int(bounding_box[3]), int(bounding_box[0]):int(bounding_box[2])].copy()
+        cropped_image: ndarray = image[int(bounding_box[1]):int(bounding_box[3]), int(bounding_box[0]):int(bounding_box[2])].copy()
         bounding_box_w: int = bounding_box[2] - bounding_box[0]
         bounding_box_h: int = bounding_box[3] - bounding_box[1]
         bounding_box_size: ndarray = numpy.array([bounding_box_h, bounding_box_w])
         if any(bounding_box_size != target_size):
-            return cv2.resize(cropped_img, (target_size[1], target_size[0]), interpolation=cv2.INTER_NEAREST)
+            return cv2.resize(cropped_image, (target_size[1], target_size[0]), interpolation=cv2.INTER_NEAREST)
 
-        return cropped_img
+        return cropped_image
+
+    @staticmethod
+    @numba.njit(fastmath=True)
+    def __letterbox_core(
+        shape: tuple[int, int],
+        target_size: int,
+        stride: int,
+        box: bool,
+    ) -> tuple[tuple[int, int], tuple[int, int, int, int]]:
+        # Scale ratio (new / old)
+        r = max(shape)
+        r = target_size / r
+
+        # Compute padding
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+        dw, dh = target_size - new_unpad[0], target_size - new_unpad[1]  # wh padding
+        if not box:
+            dw, dh = dw % stride, dh % stride  # wh padding
+        dw /= 2  # divide padding into 2 sides
+        dh /= 2
+
+        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
+        return new_unpad, (top, bottom, left, right)
+
+    @staticmethod
+    def letterbox(
+            image: ndarray,
+            target_size: int = 320,
+            color: tuple[int, ...] = (114, 114, 114),
+            stride: int = 32,
+            box: bool = False
+    ) -> tuple[ndarray, tuple[int, int], int, int, int, int]:
+        """Resize and pad image while meeting stride-multiple constraints.
+        Returns letterboxed_image_numpy_array, original_size,
+        top_pad, bottom_pad, left_pad, right_pad"""
+
+        original_size = image.shape[:2]  # current shape [height, width]
+
+        new_unpad, (top, bottom, left, right) = MaskGenerator.__letterbox_core(
+            original_size, target_size, stride, box
+        )
+
+        if original_size[::-1] != new_unpad:  # resize
+            image = cv2.resize(image, new_unpad, interpolation=cv2.INTER_NEAREST)  # switch to NEAREST for faster and sharper interp
+        image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+        return image, original_size, top, bottom, left, right
+
+    @staticmethod
+    def unletterbox(
+        image: ndarray,
+        original_size: Tuple[int, int],
+        top_pad: int,
+        bottom_pad: int,
+        left_pad: int,
+        right_pad: int,
+    ) -> ndarray:
+        """Reverses letterbox process"""
+
+        is_boolean = False
+        if image.dtype == bool:
+            is_boolean = True
+            image = image*255
+        image = image[top_pad:image.shape[0] - bottom_pad, left_pad:image.shape[1] - right_pad]
+        image = cv2.resize(image, original_size[::-1], interpolation=cv2.INTER_NEAREST)  # switch to NEAREST for faster and sharper interp
+        if is_boolean:
+            image = image > 127
+        return image
+
+    @staticmethod
+    def unletterbox_bounding_box(
+        bounding_box: ndarray,
+        letterboxed_size: Tuple[int, int],
+        original_size: Tuple[int, int],
+        top_pad: int,
+        bottom_pad: int,
+        left_pad: int,
+        right_pad: int,
+    ) -> ndarray:
+        """Reverses letterbox process to bounding box"""
+
+        letterboxed_size: ndarray = numpy.array(
+            (
+                letterboxed_size[0] - (top_pad + bottom_pad),
+                letterboxed_size[1] - (left_pad + right_pad)
+            )
+        )
+        bounding_box = bounding_box.copy()
+        bounding_box[0] = max(bounding_box[0] - left_pad, 0)
+        bounding_box[1] = max(bounding_box[1] - top_pad, 0)
+        bounding_box[2] = min(bounding_box[2] - left_pad, letterboxed_size[1])
+        bounding_box[3] = min(bounding_box[3] - top_pad, letterboxed_size[0])
+        bounding_box = MaskGenerator.bounding_box_resize(bounding_box.astype(numpy.float64), letterboxed_size, original_size).astype(numpy.int16)
+        return bounding_box
 
     def __first_input(self, model_input: Tensor) -> None:
 
@@ -541,70 +673,18 @@ class MaskGenerator:
         self.__is_traced = True
         print("Masker model (yolov7-mask) warmed up")
 
-    def forward_maskonly(self, letterboxed_image_list: list[ndarray], flip_bgr_rgb: bool = True) -> list[MaskOnlyData]:
-        """Generate detected people mask from letterboxed image provided"""
+    def forward_once_maskonly(self, image: ndarray, flip_bgr_rgb: bool = True) -> MaskOnlyData:
+        """Generate detected people mask from image provided"""
 
-        tensor_input: Tensor = torch.as_tensor(numpy.array(letterboxed_image_list), device=self.__device, dtype=self.__dtype)
-        tensor_input = tensor_input.permute(0, 3, 1, 2)
-
-        if flip_bgr_rgb:
-            tensor_input = tensor_input[:, [2, 1, 0]]
-
-        tensor_input = tensor_input/255
-
-        if not self.__is_traced:
-            self.__first_input(tensor_input)
-
-        with torch.inference_mode():
-            yolo_output: Tensor = self.__model(tensor_input)
-
-        if self.__optimize_model:
-            yolo_output = yolo_output[0]
-
-        inference_output, attenuation, bases = MaskGenerator.__unpack_inference(
-            yolo_output,
-            self.__bbox_width,
-            self.__bbox_height,
-            self.__bbox_pix
+        image, original_size, top_pad, bottom_pad, left_pad, right_pad = MaskGenerator.letterbox(
+            image,
+            self.__target_input_size,
+            self.__letterbox_color,
+            self.__letterbox_stride,
+            self.__letterbox_box_mode
         )
 
-        n, _, h, w = tensor_input.shape
-
-        found, output, output_mask = MaskGenerator.__nms_conf_people_only(
-            inference_output,
-            attenuation,
-            bases,
-            self.__hyperparameters["attn_resolution"],
-            self.__hyperparameters["num_base"],
-            self.__pooler,  # type: ignore
-            self.__confidence_threshold,
-            self.__iou_threshold
-        )
-
-        results: list[MaskOnlyData] = [
-            (False, numpy.zeros((h, w), dtype=bool))
-        ] * n
-
-        for i in range(n):
-            if found[i]:
-                pred: Tensor = output[i]
-                pred_masks: Tensor = output_mask[i]
-
-                bboxes = Boxes(pred[:, : 4])
-                ori_pred_masks: Tensor = pred_masks.view(-1, self.__hyperparameters['mask_resolution'], self.__hyperparameters['mask_resolution'])
-                pred_masks = paste_masks_in_image(ori_pred_masks, bboxes, (h, w), threshold=0.5)  # type:ignore
-
-                # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
-                total_mask: Tensor = torch.any(pred_masks, dim=0)
-                total_mask_np: ndarray = total_mask.to("cpu").numpy()
-
-                results[i] = (True, total_mask_np)
-
-        return results
-
-    def forward_once_maskonly(self, letterboxed_image: ndarray, flip_bgr_rgb: bool = True) -> MaskOnlyData:
-        """Generate detected people mask from letterboxed image provided"""
-        tensor_input: Tensor = torch.as_tensor(letterboxed_image, device=self.__device, dtype=self.__dtype)
+        tensor_input: Tensor = torch.as_tensor(image, device=self.__device, dtype=self.__dtype)
 
         tensor_input = tensor_input.permute(2, 0, 1)
 
@@ -644,7 +724,7 @@ class MaskGenerator:
             self.__iou_threshold
         )
 
-        result: MaskOnlyData = False, numpy.zeros((h, w), dtype=bool)
+        result: MaskOnlyData = False, numpy.zeros(original_size, dtype=bool)
 
         if found_s:
             pred: Tensor = output_s
@@ -657,14 +737,25 @@ class MaskGenerator:
             # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
             total_mask: Tensor = pred_masks.any(dim=0)
             total_mask_np: ndarray = total_mask.to("cpu").numpy()
+            total_mask_np = MaskGenerator.unletterbox(total_mask_np, original_size, top_pad, bottom_pad, left_pad, right_pad)
 
             result = (True, total_mask_np)
 
         return result
 
-    def forward_once_with_mcbb(self, letterboxed_image: ndarray, flip_bgr_rgb: bool = True, grouping_range_scale: float = 1, no_merge_bounding_box=False) -> MaskWithMCBB:
+    def forward_once_with_mcbb(self, image: ndarray, flip_bgr_rgb: bool = True, grouping_range_scale: float = 1, no_merge_bounding_box=False) -> MaskWithMCBB:
         """Generate detected people mask from letterboxed image provided with most center bounding box"""
-        tensor_input: Tensor = torch.as_tensor(letterboxed_image, device=self.__device, dtype=self.__dtype)
+
+        image, original_size, top_pad, bottom_pad, left_pad, right_pad = MaskGenerator.letterbox(
+            image,
+            self.__target_input_size,
+            self.__letterbox_color,
+            self.__letterbox_stride,
+            self.__letterbox_box_mode
+        )
+        letterbox_size = image.shape[:-1]
+
+        tensor_input: Tensor = torch.as_tensor(image, device=self.__device, dtype=self.__dtype)
 
         tensor_input = tensor_input.permute(2, 0, 1)
 
@@ -704,7 +795,7 @@ class MaskGenerator:
             self.__iou_threshold
         )
 
-        result: MaskWithMCBB = False, numpy.zeros((h, w), dtype=bool), numpy.array((0, 0, w, h))
+        result: MaskWithMCBB = False, numpy.zeros(original_size, dtype=bool), numpy.array((0, 0, *original_size[::-1]), dtype=numpy.int16)
 
         if found_s:
             pred: Tensor = output_s
@@ -717,10 +808,24 @@ class MaskGenerator:
             # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
             total_mask: Tensor = pred_masks.any(dim=0)
             total_mask_np: ndarray = total_mask.to("cpu").numpy()
+            total_mask_np = MaskGenerator.unletterbox(
+                total_mask_np,
+                original_size,
+                top_pad,
+                bottom_pad,
+                left_pad,
+                right_pad
+            )
 
             most_center_bounding_box, bboxes = MaskGenerator.__find_most_center_bb(bboxes, (h, w), grouping_range_scale, no_merge_bounding_box)
             most_center_bounding_box_tensor: Tensor = torch.clamp_min(most_center_bounding_box.tensor, 0)
             most_center_bounding_box_np: ndarray = numpy.around((most_center_bounding_box_tensor.to("cpu").numpy()[0].astype(numpy.uint16)))
+            most_center_bounding_box_np = MaskGenerator.unletterbox_bounding_box(
+                most_center_bounding_box_np,
+                letterbox_size,
+                original_size,
+                top_pad, bottom_pad, left_pad, right_pad
+            )
 
             result = (True, total_mask_np, most_center_bounding_box_np)
 
@@ -735,12 +840,14 @@ class MaskMocker(MaskGenerator):
     MASK_EXIST_PATH = "masks_exist"
     MASK_HWC_ATTR = "mask_hwc"
     MASK_COUNT_ATTR = "mask_count"
+    MASK_TARGET_INPUT_SIZE_ATTR = "mask_target_input_size"
 
     def __init__(self, h5py_instance: h5py.File, *args, **kwargs) -> None:
         self.__mask: deque[ndarray] = deque()
         self.__mask_mcbb: deque[ndarray] = deque()
         self.__mask_exist: deque[bool] = deque()
         self.__h5py_instance: h5py.File = h5py_instance
+        self.__kwargs: dict = kwargs
 
     def load(self) -> bool:
         """Loads masks and most center bounding box (MCBB) from file to queues"""
@@ -792,6 +899,7 @@ class MaskMocker(MaskGenerator):
 
         self.__h5py_instance.attrs[self.MASK_HWC_ATTR] = self.__mask[0].shape
         self.__h5py_instance.attrs[self.MASK_COUNT_ATTR] = len(self.__mask)
+        self.__h5py_instance.attrs[self.MASK_TARGET_INPUT_SIZE_ATTR] = self.__kwargs["target_input_size"]
 
         self.flush()
         return True
@@ -816,13 +924,6 @@ class MaskMocker(MaskGenerator):
         mask_exist: bool = self.__mask_exist.popleft()
         _ = self.__mask_mcbb.popleft()
         return mask_exist, mask
-
-    def forward_maskonly(self, *args, **kwargs) -> list[MaskOnlyData]:
-        """Pops all masks from queue simulates MaskGenerator's forward_maskonly"""
-        masks: list[MaskOnlyData] = []
-        while len(self.__mask) > 0:
-            masks.append(self.forward_once_maskonly())
-        return masks
 
     def forward_once_with_mcbb(self, *args, **kwargs) -> MaskWithMCBB:
         """Pops mask and most center bounding box (MCBB) from queue simulates MaskGenerator's forward_once_maskonly"""
