@@ -1,5 +1,5 @@
 """Module for preprocessing managers such as generator, viewer, loader, etc"""
-from .motion_vector_extractor import MotionVectorExtractor, MotionVectorExtractorProcessSpawner, MotionVectorMocker, MotionVectorData
+from .motion_vector_extractor import MotionVectorExtractor, MotionVectorMocker, MotionVectorData
 from .mask_generator import MaskGenerator, MaskMocker, MaskWithMCBB
 from .optical_flow_generator import OpticalFlowGenerator, OpticalFlowMocker, OpticalFlowData
 import h5py
@@ -43,7 +43,7 @@ class DatasetDictionary:
 
         try:
             self.__dictionary: pandas.DataFrame = pandas.read_csv(dictionary_path, index_col=False).convert_dtypes()
-            assert set(self.__dictionary.columns) - set(dataset_mapping) == set(), "Dataset mapping is not matching with the loaded dictionary, replacing..."
+            assert set(self.__dictionary.columns) - set(dataset_mapping.values()) == set(), "Dataset mapping is not matching with the loaded dictionary, replacing..."
         except:
             self.__dictionary: pandas.DataFrame = pandas.DataFrame(sample_dataset).convert_dtypes()
             self.clear()
@@ -94,7 +94,7 @@ class DatasetDictionary:
         if any(find_criterion):
             self.__dictionary = self.__dictionary[~find_criterion]
         try:
-            self.__dictionary = self.__dictionary.append(dataset_dict, ignore_index=True)
+            self.__dictionary = self.__dictionary.append(dataset_dict, ignore_index=True)  # type: ignore
         except:
             return False
         return True
@@ -171,7 +171,7 @@ class PreprocessingManagers:
         if os.path.isfile(current_path):
             _, current_filename = os.path.split(current_path)
             target_name = current_filename.split(".")[0] + ".h5"
-            if current_dictionary != None:
+            if current_dictionary != None and current_filename.split(".")[-1] != "csv":
                 current_dictionary.parse_and_append(target_name, current_path)
 
         return current_dictionary
@@ -228,7 +228,7 @@ class PreprocessingManagers:
             mock_maskgen: MaskMocker = MaskMocker(h5_handle, **self.__mask_generator_kwargs)
             mock_opflowgen: OpticalFlowMocker = OpticalFlowMocker(h5_handle, **self.__optical_flow_kwargs)
 
-            mve_spawner: MotionVectorExtractorProcessSpawner = MotionVectorExtractorProcessSpawner(abs_video_path, **self.__motion_vector_kwargs).start()
+            mve_spawner: MotionVectorExtractor = MotionVectorExtractor(abs_video_path, **self.__motion_vector_kwargs)
 
             last_frame: ndarray = numpy.empty((1))
             while True:

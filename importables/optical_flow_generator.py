@@ -203,19 +203,6 @@ class OpticalFlowGenerator:
         self.__is_traced = True
         print(f"Optical flow model ({self.__model_type} -> {self.__model_pretrained}) warmed up")
 
-    def forward(self, image_pair_list: list[tuple[ndarray, ndarray]]) -> list[OpticalFlowData]:
-        """Generate optical flow from list of two consecutive frames"""
-
-        if not self.__is_traced:
-            self.__first_input(*image_pair_list[0])
-
-        list_optical_flows_np: list[OpticalFlowData] = []
-
-        for image_pair in image_pair_list:
-            list_optical_flows_np.append(self.forward_once(*image_pair))
-
-        return list_optical_flows_np
-
     def forward_once(self, image_1: ndarray, image_2: ndarray) -> OpticalFlowData:
         """Generate optical flow from two consecutive frames"""
 
@@ -243,6 +230,19 @@ class OpticalFlowGenerator:
             )
 
         return optical_flows_np
+
+    def forward(self, image_pair_list: list[tuple[ndarray, ndarray]]) -> list[OpticalFlowData]:
+        """Generate optical flow from list of two consecutive frames"""
+
+        if not self.__is_traced:
+            self.__first_input(*image_pair_list[0])
+
+        list_optical_flows_np: list[OpticalFlowData] = []
+
+        for image_pair in image_pair_list:
+            list_optical_flows_np.append(self.forward_once(*image_pair))
+
+        return list_optical_flows_np
 
     def forward_once_with_overlap_grid(self, image_1: ndarray, image_2: ndarray, scale: int = 4) -> OpticalFlowData:
         """Generate optical flow from two consecutive frames using overlap grid"""

@@ -4,7 +4,7 @@
 # import the opencv library
 import cv2
 import numpy
-from importables.motion_vector_extractor import MotionVectorExtractor, MotionVectorExtractorProcessSpawner, MotionVectorMocker
+from importables.motion_vector_extractor import MotionVectorExtractor, MotionVectorMocker
 import time
 import h5py
 
@@ -15,7 +15,71 @@ import h5py
 # decoder = MotionVectorExtractorProcessSpawner("/mnt/c/Skripsi/dataset-h264-libx/R001A001/S001C001P001R001A001_rgb.mp4", 15, 10, 10, True, 320).start()
 
 
-webcam_ip = "rtsp://192.168.0.101:8554/cam"
+webcam_ip = "rtsp://NicholasXPS17:8554/cam"
+video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
+
+# ----------- NORMAL MODE
+args_mvex = {
+    "path":  video_path,
+    "bound":  32,
+    "raw_motion_vectors": False,
+    "camera_realtime": False,
+    "camera_update_rate":  120,
+    "camera_buffer_size":  0,
+}
+
+args_mvex = {
+    "path":  webcam_ip,
+    "bound":  32,
+    "raw_motion_vectors": False,
+    "camera_realtime": True,
+    "camera_update_rate":  120,
+    "camera_buffer_size":  0,
+}
+
+decoder = MotionVectorExtractor(**args_mvex)
+
+while(True):
+
+    start_time = time.perf_counter()
+    # Capture the video frame by frame
+    data = decoder.read()
+
+    if cv2.waitKey(1) & 0xFF == ord('q') or not data[0]:
+        decoder.stop()
+        break
+
+    fl = data[2]
+
+    fr = data[1]
+    fl_x = fl[:, :, 0]
+    fl_y = fl[:, :, 1]
+
+    # Display the resulting frame
+
+    fl_x_s = numpy.dstack((fl_x, fl_x, fl_x))
+    fl_y_s = numpy.dstack((fl_y, fl_y, fl_y))
+
+    stacked = numpy.hstack((fr,
+                            fl_x_s,
+                            fl_y_s))
+
+    cv2.imshow('frame', stacked)
+
+    # the 'q' button is set as the
+    # quitting button you may use any
+    # desired button of your choice
+
+    print(1/((time.perf_counter()-start_time)), end="\r")
+
+# After the loop release the cap object
+# decoder.stop()
+# Destroy all the windows
+cv2.destroyAllWindows()
+
+
+exit()
+webcam_ip = "rtsp://NicholasXPS17:8554/cam"
 video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
 
 # ----------- SAVING
@@ -24,17 +88,20 @@ args_mvex = {
     "bound":  32,
     "raw_motion_vectors": True,
     "camera_realtime": False,
-    "camera_update_rate":  300,
+    "camera_update_rate":  120,
     "camera_buffer_size":  0,
-    "letterboxed": True,
-    "new_shape": 640,
-    "box": False,
-    "color": (114, 114, 114, 128, 128),
-    "stride":  32,
 }
 
+args_mvex = {
+    "path":  webcam_ip,
+    "bound":  32,
+    "raw_motion_vectors": True,
+    "camera_realtime": True,
+    "camera_update_rate":  120,
+    "camera_buffer_size":  0,
+}
 
-decoder = MotionVectorExtractorProcessSpawner(**args_mvex, update_rate=300).start()
+decoder = MotionVectorExtractor(**args_mvex)
 mve_save = h5py.File("try_mve.h5", mode="w")
 mock_mve = MotionVectorMocker(mve_save, **args_mvex)
 
@@ -50,7 +117,7 @@ while(True):
         break
 
     fl = data[2]
-    fl = MotionVectorExtractor.rescale_mv(fl, 128, 1/2*args_mvex["bound"])
+    fl = MotionVectorExtractor.rescale_mv(fl.copy(), 128, 1/2*args_mvex["bound"])
 
     fr = data[1]
     fl_x = fl[:, :, 0]

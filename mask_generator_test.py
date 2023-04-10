@@ -4,7 +4,7 @@
 # import the opencv library
 import cv2
 import numpy
-from importables.motion_vector_extractor import MotionVectorExtractorProcessSpawner, MotionVectorExtractor, MotionVectorMocker
+from importables.motion_vector_extractor import MotionVectorExtractor, MotionVectorMocker
 from importables.mask_generator import MaskGenerator, MaskMocker
 import time
 from collections import deque
@@ -13,14 +13,7 @@ import h5py
 
 timer_avg = deque([0.]*101, maxlen=101)
 
-# decoder = MotionVectorExtractor(**args_mvex)
-# decoder = MotionVectorExtractorProcessSpawner(**args_mvex, update_rate=200).start()
-# decoder = MotionVectorExtractorProcessSpawner("rtsp://192.168.0.101:8554/cam", 15, 30, 30, True, 320, box=True).start()
-# decoder = MotionVectorExtractorProcessSpawner("rtsp://192.168.0.183:8554/cam", 15, 30, 30, True, 320, box=True).start()
-# decoder = MotionVectorExtractorProcessSpawner("rtsp://192.168.0.185:5540/ch0", 15, 40, 320, True, 320, box=True).start()
-# decoder = MotionVectorExtractorProcessSpawner("/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4", 15, 5, 5, True, 640, box=True).start()
-
-webcam_ip = "rtsp://0.tcp.ap.ngrok.io:12977/cam"
+webcam_ip = "rtsp://NicholasXPS17:8554/cam"
 # webcam_ip = "rtsp://192.168.0.122:8554/cam"
 video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
 # ----------- NORMAL RUN
@@ -31,20 +24,28 @@ args_mvex = {
     "camera_realtime": False,
     "camera_update_rate":  120,
     "camera_buffer_size":  0,
-    "letterboxed": True,
-    "new_shape": 320,
-    "box": False,
-    "color": (114, 114, 114, 128, 128),
-    "stride":  32,
 }
 
-yolo_maskgen = MaskGenerator(
-    './libs/yolov7-mask/yolov7-mask.pt',
-    './libs/yolov7-mask/data/hyp.scratch.mask.yaml',
-    0.5,
-    0.45,
-    True,
-)
+args_mvex = {
+    "path":  webcam_ip,
+    "bound":  32,
+    "raw_motion_vectors": False,
+    "camera_realtime": True,
+    "camera_update_rate":  120,
+    "camera_buffer_size":  0,
+}
+
+args_yolo = {
+    "weight_path": './libs/yolov7-mask/yolov7-mask.pt',
+    "hyperparameter_path": './libs/yolov7-mask/data/hyp.scratch.mask.yaml',
+    "confidence_threshold": 0.5,
+    "iou_threshold": 0.45,
+    "target_input_size": 320,
+    "optimize_model": True,
+}
+
+
+yolo_maskgen = MaskGenerator(**args_yolo)
 
 sample_frame_reader = MotionVectorExtractor(**args_mvex)
 first_frame = sample_frame_reader.read()
@@ -52,7 +53,7 @@ print(first_frame[1].shape)
 sample_frame_reader.stop()
 yolo_maskgen.forward_once_maskonly(first_frame[1])
 
-decoder = MotionVectorExtractorProcessSpawner(**args_mvex).start()
+decoder = MotionVectorExtractor(**args_mvex)
 
 counter = 0
 
@@ -64,6 +65,9 @@ while(True):
     # using constant multiprocessing(faster)
     data = decoder.read()
     available, fr, fl = data
+
+    fr = cv2.resize(fr, (320, 180))
+    fl = cv2.resize(fl, (320, 180))
 
     counter += 1
 
@@ -139,9 +143,9 @@ while(True):
     # fmasked_rez = cv2.resize(fmasked, (fr.shape[1] * 2, fr.shape[0] * 2), interpolation=cv2.INTER_NEAREST)
     # fmasked_crop = MaskGenerator.crop_to_bb_and_rescale(fmasked_rez, target_mcbb, fr.shape[:2], fr.shape[:2])
 
-    fmasked_crop = MaskGenerator.crop_to_bb_and_rescale(fmasked, target_mcbb, fr.shape[:2], fr.shape[:2])
-    fl_x_s_crop = MaskGenerator.crop_to_bb_and_rescale(fl_x_s, target_mcbb, fr.shape[:2], fr.shape[:2])
-    fl_y_s_crop = MaskGenerator.crop_to_bb_and_rescale(fl_y_s, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fmasked_crop = MaskGenerator.crop_to_bb_and_resize(fmasked, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_x_s_crop = MaskGenerator.crop_to_bb_and_resize(fl_x_s, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_y_s_crop = MaskGenerator.crop_to_bb_and_resize(fl_y_s, target_mcbb, fr.shape[:2], fr.shape[:2])
 
     fr = cv2.rectangle(fr, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
     fl_x = cv2.rectangle(fl_x, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
@@ -167,7 +171,7 @@ while(True):
     )
 
     cv2.imshow('frame', fshow)
-    time.sleep(1/2)
+    # time.sleep(1/2)
     # # the 'q' button is set as the
     # # quitting button you may use any
     # # desired button of your choice
@@ -187,22 +191,32 @@ video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
 args_mvex = {
     "path":  video_path,
     "bound":  32,
-    "raw_motion_vectors": True,
+    "raw_motion_vectors": False,
     "camera_realtime": False,
-    "camera_update_rate":  300,
+    "camera_update_rate":  120,
     "camera_buffer_size":  0,
-    "letterboxed": True,
-    "new_shape": 640,
-    "box": False,
-    "color": (114, 114, 114, 128, 128),
-    "stride":  32,
 }
 
-yolo_maskgen = MaskGenerator(
-    './libs/yolov7-mask/yolov7-mask.pt',
-    './libs/yolov7-mask/data/hyp.scratch.mask.yaml',
-    0.5,
-    0.45)
+args_mvex = {
+    "path":  webcam_ip,
+    "bound":  32,
+    "raw_motion_vectors": False,
+    "camera_realtime": True,
+    "camera_update_rate":  120,
+    "camera_buffer_size":  0,
+}
+
+args_yolo = {
+    "weight_path": './libs/yolov7-mask/yolov7-mask.pt',
+    "hyperparameter_path": './libs/yolov7-mask/data/hyp.scratch.mask.yaml',
+    "confidence_threshold": 0.5,
+    "iou_threshold": 0.45,
+    "target_input_size": 320,
+    "optimize_model": True,
+}
+
+
+yolo_maskgen = MaskGenerator(**args_yolo)
 
 sample_frame_reader = MotionVectorExtractor(**args_mvex)
 first_frame = sample_frame_reader.read()
@@ -210,7 +224,7 @@ print(first_frame[1].shape)
 sample_frame_reader.stop()
 yolo_maskgen.forward_once_maskonly(first_frame[1])
 
-decoder = MotionVectorExtractorProcessSpawner(**args_mvex, update_rate=300).start()
+decoder = MotionVectorExtractor(**args_mvex)
 mve_save = h5py.File("try_mve.h5", mode="w")
 mock_mve = MotionVectorMocker(mve_save, **args_mvex)
 mock_maskgen = MaskMocker(mve_save, **args_mvex)
@@ -291,7 +305,7 @@ while(True):
 
     mf = numpy.dstack((mask_data_uint, mask_data_uint, mask_data_uint))
 
-    fr = MaskGenerator.crop_to_bb_and_rescale(fr, mcbb)
+    fr = MaskGenerator.crop_to_bb_and_resize(fr, mcbb)
 
     frshow = numpy.hstack((fr, mf, fmasked))
     flxshow = numpy.hstack((fl_x, mf, fl_x_s))
@@ -384,7 +398,7 @@ yolo_maskgen = MaskMocker(
     0.5,
     0.45)
 
-decoder = MotionVectorMocker(mve_load, **args_mvex, update_rate=300).start()
+decoder = MotionVectorMocker(mve_load, **args_mvex)
 yolo_maskgen.load()
 decoder.load()
 
@@ -462,7 +476,7 @@ while(True):
 
     mf = numpy.dstack((mask_data_uint, mask_data_uint, mask_data_uint))
 
-    fr = MaskGenerator.crop_to_bb_and_rescale(fr, mcbb)
+    fr = MaskGenerator.crop_to_bb_and_resize(fr, mcbb)
 
     frshow = numpy.hstack((fr, mf, fmasked))
     flxshow = numpy.hstack((fl_x, mf, fl_x_s))
