@@ -3,38 +3,64 @@
 import os
 import time
 import queue
-from numpy import ndarray
 from mvextractor.videocap import VideoCap  # pylint: disable=no-name-in-module
 from multiprocessing import Queue, Process
+from .custom_types import (
+    DecodedData, 
+    FrameRGB, 
+    FrameType,
+    IsDecoderFrameAvailable, 
+    RawMotionVectors, 
+    Any
+)
 
-FrameData = tuple[bool, ndarray, ndarray, str, float]
 
-
-class VideoCapturerProcessSpawner:
+class VideoDecoderProcessSpawner:
     """An improved VideoCap class to fetch realtime (even if drop frame) using multiprocessing"""
 
-    def __init__(self, path: str, realtime: bool = False, update_rate: int = 60, buffer_size: int = 0) -> None:
+    def __init__(self, path: str, realtime: bool = False, update_rate: int = 999, buffer_size: int = 0) -> None:
         self.__update_rate: int = update_rate
         self.__delay: float = 1/update_rate
         self.__path: str = path
         self.__run: bool = False
         self.__first_read: bool = False
-        self.__realtime = realtime
-        self.__queue: Queue = Queue(maxsize=1 if realtime else buffer_size)  # buffer size will be ignored if realtime == True
+        self.__realtime: bool = realtime
+        self.__queue: Queue[DecodedData] = Queue(maxsize=1 if realtime else buffer_size)  # buffer size will be ignored if realtime == True
 
     def __refresh(self) -> None:
         count_timeout: int = 0
         video_capturer: VideoCap = VideoCap()
         if not video_capturer.open(self.__path):
             assert False, "ERROR WHILE LOADING " + self.__path
-        data: FrameData = video_capturer.read()
-        self.__queue.put(data)  # initialization frame
+        data: Any = video_capturer.read()
+        is_available: IsDecoderFrameAvailable = data[0]
+        frame_rgb: FrameRGB = data[1]
+        raw_motion_vector: RawMotionVectors = data[2]
+        frame_type: FrameType = data[3]
+        self.__queue.put(
+            (
+                is_available,
+                frame_rgb,
+                raw_motion_vector,
+                frame_type
+            )
+        )  # initialization frame
         timeout_time: int = self.__update_rate*10
         while True:
             start: float = time.perf_counter()
-            data = video_capturer.read()
+            data: Any = video_capturer.read()
             try:
-                self.__queue.put(data, block=not self.__realtime)
+                is_available: IsDecoderFrameAvailable = data[0]
+                frame_rgb: FrameRGB = data[1]
+                raw_motion_vector: RawMotionVectors = data[2]
+                frame_type: FrameType = data[3]
+                self.__queue.put(
+                    (
+                        is_available,
+                        frame_rgb,
+                        raw_motion_vector,
+                        frame_type
+                    ), block=not self.__realtime)
             except queue.Full:
                 count_timeout += 1
                 if count_timeout >= timeout_time:  # how many frames until it kills itself
@@ -50,7 +76,7 @@ class VideoCapturerProcessSpawner:
             end: float = time.perf_counter()
             time.sleep(max(0, self.__delay - (end - start)))
 
-    def read(self) -> FrameData:
+    def read(self) -> DecodedData:
         """Pulls frame data from video capturer process and returns it"""
         if self.__run and self.__first_read:
             if not self.__data[0]:  # automatically kill process if source empty
@@ -64,17 +90,17 @@ class VideoCapturerProcessSpawner:
         self.__first_read = True
         return self.__data
 
-    def start(self) -> "VideoCapturerProcessSpawner":
+    def start(self) -> "VideoDecoderProcessSpawner":
         """Spawns new process for video capturer"""
         print("Spawning and initializing video capturer process...")
         self.__process: Process = Process(target=self.__refresh, args=(), daemon=True)
         self.__process.start()
-        self.__data: FrameData = self.__queue.get()
+        self.__data: DecodedData = self.__queue.get()
         self.__run = True
         print("Video capturer process started")
         return self
 
-    def stop(self, manual: bool = True) -> "VideoCapturerProcessSpawner":
+    def stop(self, manual: bool = True) -> "VideoDecoderProcessSpawner":
         """Kill existing process for video capturer"""
         if self.__run:
             print("Stopping video capturer process...")
@@ -83,7 +109,9 @@ class VideoCapturerProcessSpawner:
                     self.read()
             self.__run = False
             self.__first_read = False
-            os.kill(self.__process.pid, 9)  # type: ignore
+            if self.__process:
+                if self.__process.pid:
+                    os.kill(self.__process.pid, 9)
             print("Video capturer process stopped")
         return self
 

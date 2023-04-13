@@ -1,13 +1,16 @@
+
+# run rtsp
+# https://github.com/aler9/rtsp-simple-server#from-a-webcam
+# import the opencv library
 import cv2
 import numpy
 import time
 import h5py
-from copy import deepcopy
 from numpy import ndarray
 from importables.utilities import Utilities
 from importables.video_decoder import VideoDecoderProcessSpawner
-from importables.custom_types import DecodedData, FrameRGB, OpticalFlowFrame
-from importables.optical_flow_generator import OpticalFlowGenerator, OpticalFlowFrame, OpticalFlowGeneratorMocker
+from importables.custom_types import DecodedData, FrameRGB, RawMotionVectors, MotionVectorFrame
+from importables.motion_vector_processor import MotionVectorProcessor, MotionVectorFrame, MotionVectorProcessorMocker
 
 webcam_ip = "rtsp://NicholasXPS17:8554/cam"
 video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
@@ -27,21 +30,17 @@ args_decoder = {
 
 decoder = VideoDecoderProcessSpawner(**args_decoder).start()
 frame_data: DecodedData = decoder.read()
-last_frame_data: DecodedData = deepcopy(frame_data)
 
 assert frame_data[0], "DECODER ERROR, ABORTING..."
 
-args_opgenerator = {
-    "model_type": "flowformer",
-    "model_pretrained": "sintel",
+args_mvprocessor = {
+    "input_size": frame_data[1].shape[:2],
     "bound":  32,
-    "raw_optical_flows": False,
+    "raw_motion_vectors": False,
     "target_size": 320,
-    "overlap_grid_mode": True,
-    "overlap_grid_scale": 2
 }
 
-op_generator = OpticalFlowGenerator(**args_opgenerator)
+mv_processor = MotionVectorProcessor(**args_mvprocessor)
 
 while(True):
 
@@ -52,14 +51,14 @@ while(True):
         decoder.stop()
         break
 
-    last_rgb_frame: FrameRGB = last_frame_data[1]
     rgb_frame: FrameRGB = frame_data[1]
+    raw_mv: RawMotionVectors = frame_data[2]
 
-    op_frame: OpticalFlowFrame = op_generator.forward_once_auto(last_rgb_frame, rgb_frame)
-    rgb_frame = cv2.resize(rgb_frame, (op_frame.shape[1], op_frame.shape[0]))
+    mv_frame: MotionVectorFrame = mv_processor.process(raw_mv)
+    rgb_frame = cv2.resize(rgb_frame, (mv_frame.shape[1], mv_frame.shape[0]))
 
-    fl_x = op_frame[:, :, 0]
-    fl_y = op_frame[:, :, 1]
+    fl_x = mv_frame[:, :, 0]
+    fl_y = mv_frame[:, :, 1]
 
     # Display the resulting frame
 
@@ -75,7 +74,7 @@ while(True):
     # the 'q' button is set as the
     # quitting button you may use any
     # desired button of your choice
-    last_frame_data = frame_data
+
     frame_data = decoder.read()
     print(1/((time.perf_counter()-start_time)), end="\n")
     print(1/((time.perf_counter()-start_time)), end="\r")
@@ -88,24 +87,19 @@ cv2.destroyAllWindows()
 # ----------- SAVING
 decoder = VideoDecoderProcessSpawner(**args_decoder).start()
 frame_data: DecodedData = decoder.read()
-last_frame_data: DecodedData = deepcopy(frame_data)
 
 assert frame_data[0], "DECODER ERROR, ABORTING..."
 
-args_opgenerator = {
-    "model_type": "flowformer",
-    "model_pretrained": "sintel",
+args_mvprocessor = {
+    "input_size": frame_data[1].shape[:2],
     "bound":  32,
-    "raw_optical_flows": True,
-    "target_size": 320,
-    "overlap_grid_mode": True,
-    "overlap_grid_scale": 2
+    "raw_motion_vectors": True,
 }
 
-op_generator = OpticalFlowGenerator(**args_opgenerator)
+mv_processor = MotionVectorProcessor(**args_mvprocessor)
 
-op_save = h5py.File("try_mve.h5", mode="w")
-mock_op = OpticalFlowGeneratorMocker(op_save, **args_opgenerator)
+mve_save = h5py.File("try_mve.h5", mode="w")
+mock_mve = MotionVectorProcessorMocker(mve_save, **args_mvprocessor)
 
 while(True):
 
@@ -116,16 +110,16 @@ while(True):
         decoder.stop()
         break
 
-    last_rgb_frame: FrameRGB = last_frame_data[1]
     rgb_frame: FrameRGB = frame_data[1]
+    raw_mv: RawMotionVectors = frame_data[2]
 
-    op_frame: OpticalFlowFrame = op_generator.forward_once_auto(last_rgb_frame, rgb_frame)
-    rgb_frame = cv2.resize(rgb_frame, (op_frame.shape[1], op_frame.shape[0]))
-    mock_op.append(op_frame)
-    op_frame = Utilities.bound_motion_frame(op_frame.copy(), 128, 255/(2*args_opgenerator["bound"]))
+    mv_frame: MotionVectorFrame = mv_processor.process(raw_mv)
+    rgb_frame = cv2.resize(rgb_frame, (mv_frame.shape[1], mv_frame.shape[0]))
+    mock_mve.append(mv_frame)
+    mv_frame = Utilities.bound_motion_frame(mv_frame.copy(), 128, 255/(2*args_mvprocessor["bound"]))
 
-    fl_x = op_frame[:, :, 0]
-    fl_y = op_frame[:, :, 1]
+    fl_x = mv_frame[:, :, 0]
+    fl_y = mv_frame[:, :, 1]
 
     # Display the resulting frame
 
@@ -141,7 +135,7 @@ while(True):
     # the 'q' button is set as the
     # quitting button you may use any
     # desired button of your choice
-    last_frame_data = frame_data
+
     frame_data = decoder.read()
     print(1/((time.perf_counter()-start_time)), end="\n")
     print(1/((time.perf_counter()-start_time)), end="\r")
@@ -150,8 +144,8 @@ while(True):
 # Destroy all the windows
 decoder.stop()
 cv2.destroyAllWindows()
-mock_op.save()
-op_save.close()
+mock_mve.save()
+mve_save.close()
 
 # ----------- LOADING
 decoder = VideoDecoderProcessSpawner(**args_decoder).start()
@@ -159,21 +153,17 @@ frame_data: DecodedData = decoder.read()
 
 assert frame_data[0], "DECODER ERROR, ABORTING..."
 
-args_opgenerator = {
-    "model_type": "flowformer",
-    "model_pretrained": "sintel",
+args_mvprocessor = {
+    "input_size": frame_data[1].shape[:2],
     "bound":  32,
-    "raw_optical_flows": False,
-    "target_size": 320,
-    "overlap_grid_mode": True,
-    "overlap_grid_scale": 2,
+    "raw_motion_vectors": False,
 }
 
 
-op_load = h5py.File("try_mve.h5", mode="r")
-op_generator = OpticalFlowGenerator(**args_opgenerator)
-op_generator_mock = OpticalFlowGeneratorMocker(op_load, **args_opgenerator)
-op_generator_mock.load()
+mve_load = h5py.File("try_mve.h5", mode="r")
+mv_processor = MotionVectorProcessor(**args_mvprocessor)
+mv_processor_mock = MotionVectorProcessorMocker(mve_load, **args_mvprocessor)
+mv_processor_mock.load()
 
 while(True):
 
@@ -184,18 +174,18 @@ while(True):
         decoder.stop()
         break
 
-    last_rgb_frame: FrameRGB = last_frame_data[1]
     rgb_frame: FrameRGB = frame_data[1]
+    raw_mv: RawMotionVectors = frame_data[2]
 
-    op_frame: OpticalFlowFrame = op_generator.forward_once_auto(last_rgb_frame, rgb_frame)
-    rgb_frame = cv2.resize(rgb_frame, (op_frame.shape[1], op_frame.shape[0]))
-    op_frame_mock: OpticalFlowFrame = op_generator_mock.forward_once_auto(last_rgb_frame, rgb_frame)
+    mv_frame: MotionVectorFrame = mv_processor.process(raw_mv)
+    rgb_frame = cv2.resize(rgb_frame, (mv_frame.shape[1], mv_frame.shape[0]))
+    mv_frame_mock: MotionVectorFrame = mv_processor_mock.process(raw_mv)
 
-    fl_x = op_frame[:, :, 0]
-    fl_y = op_frame[:, :, 1]
+    fl_x = mv_frame[:, :, 0]
+    fl_y = mv_frame[:, :, 1]
 
-    fl_x_mock = op_frame_mock[:, :, 0]
-    fl_y_mock = op_frame_mock[:, :, 1]
+    fl_x_mock = mv_frame_mock[:, :, 0]
+    fl_y_mock = mv_frame_mock[:, :, 1]
 
     # Display the resulting frame
 
@@ -219,11 +209,10 @@ while(True):
     # quitting button you may use any
     # desired button of your choice
 
-    last_frame_data = frame_data
     frame_data = decoder.read()
     print("MSE -> ", ((stacked - stacked_mock)**2).mean(axis=None), 1/((time.perf_counter()-start_time)), end="\n")  # type: ignore
     print("MSE -> ", ((stacked - stacked_mock)**2).mean(axis=None), 1/((time.perf_counter()-start_time)), end="\r")  # type: ignore
 
 decoder.stop()
 cv2.destroyAllWindows()
-op_load.close()
+mve_load.close()

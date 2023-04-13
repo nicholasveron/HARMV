@@ -3,114 +3,99 @@
 # https://github.com/aler9/rtsp-simple-server#from-a-webcam
 # import the opencv library
 import cv2
-import numpy
-from importables.motion_vector_extractor import MotionVectorExtractor, MotionVectorMocker
-from importables.mask_generator import MaskGenerator, MaskMocker
+import h5py
 import time
+import numpy
 from collections import deque
 from ptlflow.utils import flow_utils
-import h5py
+from importables.utilities import Utilities
+from importables.video_decoder import VideoDecoderProcessSpawner
+from importables.mask_generator import MaskGenerator, MaskGeneratorMocker
+from importables.custom_types import (
+    FrameRGB,
+    DecodedData,
+    RawMotionVectors,
+    SegmentationMask,
+    BoundingBoxXY1XY2,
+    MotionVectorFrame,
+    MaskWithMostCenterBoundingBoxData,
+)
+from importables.motion_vector_processor import MotionVectorProcessor, MotionVectorProcessorMocker
 
 timer_avg = deque([0.]*101, maxlen=101)
 
 webcam_ip = "rtsp://NicholasXPS17:8554/cam"
-# webcam_ip = "rtsp://192.168.0.122:8554/cam"
 video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
+
 # ----------- NORMAL RUN
-args_mvex = {
+args_decoder = {
     "path":  video_path,
-    "bound":  32,
-    "raw_motion_vectors": False,
-    "camera_realtime": False,
-    "camera_update_rate":  120,
-    "camera_buffer_size":  0,
+    "realtime": False,
+    "update_rate":  25,
 }
 
-args_mvex = {
-    "path":  webcam_ip,
+# args_decoder = {
+#     "path":  webcam_ip,
+#     "realtime": True,
+#     "update_rate":  120,
+# }
+
+decoder = VideoDecoderProcessSpawner(**args_decoder).start()
+frame_data: DecodedData = decoder.read()
+
+assert frame_data[0], "DECODER ERROR, ABORTING..."
+
+args_mvprocessor = {
+    "input_size": frame_data[1].shape[:2],
     "bound":  32,
     "raw_motion_vectors": False,
-    "camera_realtime": True,
-    "camera_update_rate":  120,
-    "camera_buffer_size":  0,
+    "target_size": 320,
 }
+mv_processor = MotionVectorProcessor(**args_mvprocessor)
+mv_frame: MotionVectorFrame = mv_processor.process(frame_data[2])
 
 args_yolo = {
     "weight_path": './libs/yolov7-mask/yolov7-mask.pt',
     "hyperparameter_path": './libs/yolov7-mask/data/hyp.scratch.mask.yaml',
     "confidence_threshold": 0.5,
     "iou_threshold": 0.45,
-    "target_input_size": 320,
+    "target_size": 320,
     "optimize_model": True,
 }
-
-
 yolo_maskgen = MaskGenerator(**args_yolo)
-
-sample_frame_reader = MotionVectorExtractor(**args_mvex)
-first_frame = sample_frame_reader.read()
-print(first_frame[1].shape)
-sample_frame_reader.stop()
-yolo_maskgen.forward_once_maskonly(first_frame[1])
-
-decoder = MotionVectorExtractor(**args_mvex)
+yolo_maskgen.forward_once_maskonly(frame_data[1])
 
 counter = 0
-
-target_mcbb = numpy.array((0, 0, first_frame[1].shape[1], first_frame[1].shape[0])).astype(numpy.float16)
+target_mcbb: BoundingBoxXY1XY2 = numpy.array((0, 0, mv_frame.shape[1], mv_frame.shape[0])).astype(numpy.float16)
 
 while(True):
+    counter += 1
+    start_time = time.perf_counter()
     # Capture the video frame by frame
 
-    # using constant multiprocessing(faster)
-    data = decoder.read()
-    available, fr, fl = data
-
-    fr = cv2.resize(fr, (320, 180))
-    fl = cv2.resize(fl, (320, 180))
-
-    counter += 1
-
-    if cv2.waitKey(1) & 0xFF == ord('q') or not available:
+    if cv2.waitKey(1) & 0xFF == ord('q') or not frame_data[0]:
         decoder.stop()
         break
 
-    # mask_data = yolo_maskgen.forward_once_maskonly(fr)
+    rgb_frame: FrameRGB = frame_data[1]
+    raw_mv: RawMotionVectors = frame_data[2]
+
+    mv_frame: MotionVectorFrame = mv_processor.process(raw_mv)
+
     start_time = time.perf_counter()
-    mask_data = yolo_maskgen.forward_once_with_mcbb(fr)
+    mask_data: MaskWithMostCenterBoundingBoxData = yolo_maskgen.forward_once_with_mcbb(rgb_frame)
     timer_avg.append(1/((time.perf_counter()-start_time)))
-    # fl = MotionVectorExtractor.rescale_mv(fl, 128, 1/2*args_mvex["bound"])
 
-    fl_x = fl[..., 0]
-    fl_y = fl[..., 1]
+    fr = cv2.resize(rgb_frame, (mv_frame.shape[1], mv_frame.shape[0]))
 
-    # letterbox no need, decoder with letterbox enabled
-    # fr = rev_letterbox(fr, 320)
-    # fl_x = rev_letterbox(fl_x, 320)
-    # fl_y = rev_letterbox(fl_y, 320)
+    fl_x = mv_frame[:, :, 0]
+    fl_y = mv_frame[:, :, 1]
 
-    # using threading, (slower, avg 48fps, 1% 30fps )
-    # data = decoder.read_while_process(yolo_maskgen.generate_once)
-    # available, fr, fl = data[0]
-
-    # if cv2.waitKey(1) & 0xFF == ord('q') or not available:
-    #     decoder.stop()
-    #     break
-
-    # fl_x = fl[..., 0]
-    # fl_y = fl[..., 1]
-    # mask_data = data[1]
-
-    mcbb = mask_data[2]
+    mcbb: BoundingBoxXY1XY2 = mask_data[2]
     target_mcbb = (target_mcbb + (mcbb.astype(numpy.float32) - target_mcbb) * 0.1)
-    mask_data = mask_data[1]
+    mask_frame: SegmentationMask = mask_data[1]
 
-    # fr = cv2.rectangle(fr, (int(mcbb[0]), int(mcbb[1])), (int(mcbb[2]), int(mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
-    # fr = MaskGenerator.crop_to_bb_and_rescale(fr, target_mcbb)
-    # cv2.imshow('frame', fr)
-    # continue
-
-    mask_data_uint = (mask_data.astype(numpy.uint8)*255)
+    mask_frame_uint = (mask_frame.astype(numpy.uint8)*255)
 
     combine_to_mask = numpy.dstack(
         (
@@ -120,12 +105,13 @@ while(True):
         )
     )
 
-    combine_to_mask[~mask_data] = (255, 255, 255, 128, 128)
+    combine_to_mask[~mask_frame] = (255, 255, 255, 128, 128)
 
     tl_avg = list(timer_avg)
     tl_avg.sort()
     tl_avg_10 = tl_avg[:len(timer_avg)//10]
     tl_avg_1 = tl_avg[:len(timer_avg)//100]
+    print(sum(timer_avg)//len(timer_avg), sum(tl_avg_10)//len(tl_avg_10), sum(tl_avg_1)//len(tl_avg_1), end="\n\n")
     print(sum(timer_avg)//len(timer_avg), sum(tl_avg_10)//len(tl_avg_10), sum(tl_avg_1)//len(tl_avg_1), end="\r")
 
     fmasked = combine_to_mask[:, :, 0:3]
@@ -138,14 +124,11 @@ while(True):
     fl_x_s = numpy.dstack((fl_x_masked, fl_x_masked, fl_x_masked))
     fl_y_s = numpy.dstack((fl_y_masked, fl_y_masked, fl_y_masked))
 
-    mf = numpy.dstack((mask_data_uint, mask_data_uint, mask_data_uint))
+    mf = numpy.dstack((mask_frame_uint, mask_frame_uint, mask_frame_uint))
 
-    # fmasked_rez = cv2.resize(fmasked, (fr.shape[1] * 2, fr.shape[0] * 2), interpolation=cv2.INTER_NEAREST)
-    # fmasked_crop = MaskGenerator.crop_to_bb_and_rescale(fmasked_rez, target_mcbb, fr.shape[:2], fr.shape[:2])
-
-    fmasked_crop = MaskGenerator.crop_to_bb_and_resize(fmasked, target_mcbb, fr.shape[:2], fr.shape[:2])
-    fl_x_s_crop = MaskGenerator.crop_to_bb_and_resize(fl_x_s, target_mcbb, fr.shape[:2], fr.shape[:2])
-    fl_y_s_crop = MaskGenerator.crop_to_bb_and_resize(fl_y_s, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fmasked_crop = Utilities.crop_to_bb_and_resize(fmasked, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_x_s_crop = Utilities.crop_to_bb_and_resize(fl_x_s, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_y_s_crop = Utilities.crop_to_bb_and_resize(fl_y_s, target_mcbb, fr.shape[:2], fr.shape[:2])
 
     fr = cv2.rectangle(fr, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
     fl_x = cv2.rectangle(fl_x, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
@@ -155,11 +138,6 @@ while(True):
     frshow = numpy.hstack((fr, mf, fmasked, fmasked_crop))
     flxshow = numpy.hstack((fl_x, mf, fl_x_s, fl_x_s_crop))
     flyshow = numpy.hstack((fl_y, mf, fl_y_s, fl_y_s_crop))
-
-    # flxy_masked = flow_utils.flow_to_rgb(numpy.dstack((fl_x_masked, fl_y_masked)))
-    # flxy_masked = cv2.cvtColor(flxy_masked, cv2.COLOR_RGB2BGR)  # type: ignore
-
-    # flxyrgb = numpy.hstack((fl_x_s, fl_y_s, flxy_masked))
 
     fshow = numpy.vstack(
         (
@@ -171,110 +149,73 @@ while(True):
     )
 
     cv2.imshow('frame', fshow)
-    # time.sleep(1/2)
-    # # the 'q' button is set as the
-    # # quitting button you may use any
-    # # desired button of your choice
 
+    # the 'q' button is set as the
+    # quitting button you may use any
+    # desired button of your choice
+
+    frame_data = decoder.read()
 
 # After the loop release the cap object
 # Destroy all the windows
 decoder.stop()
 cv2.destroyAllWindows()
 
-exit()
-
-webcam_ip = "rtsp://192.168.0.101:8554/cam"
-video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
 
 # ----------- SAVING
-args_mvex = {
-    "path":  video_path,
+decoder = VideoDecoderProcessSpawner(**args_decoder).start()
+frame_data: DecodedData = decoder.read()
+
+assert frame_data[0], "DECODER ERROR, ABORTING..."
+
+args_mvprocessor = {
+    "input_size": frame_data[1].shape[:2],
     "bound":  32,
-    "raw_motion_vectors": False,
-    "camera_realtime": False,
-    "camera_update_rate":  120,
-    "camera_buffer_size":  0,
+    "raw_motion_vectors": True,
 }
 
-args_mvex = {
-    "path":  webcam_ip,
-    "bound":  32,
-    "raw_motion_vectors": False,
-    "camera_realtime": True,
-    "camera_update_rate":  120,
-    "camera_buffer_size":  0,
-}
+mv_processor = MotionVectorProcessor(**args_mvprocessor)
+mv_frame: MotionVectorFrame = mv_processor.process(frame_data[2])
 
-args_yolo = {
-    "weight_path": './libs/yolov7-mask/yolov7-mask.pt',
-    "hyperparameter_path": './libs/yolov7-mask/data/hyp.scratch.mask.yaml',
-    "confidence_threshold": 0.5,
-    "iou_threshold": 0.45,
-    "target_input_size": 320,
-    "optimize_model": True,
-}
-
-
-yolo_maskgen = MaskGenerator(**args_yolo)
-
-sample_frame_reader = MotionVectorExtractor(**args_mvex)
-first_frame = sample_frame_reader.read()
-print(first_frame[1].shape)
-sample_frame_reader.stop()
-yolo_maskgen.forward_once_maskonly(first_frame[1])
-
-decoder = MotionVectorExtractor(**args_mvex)
 mve_save = h5py.File("try_mve.h5", mode="w")
-mock_mve = MotionVectorMocker(mve_save, **args_mvex)
-mock_maskgen = MaskMocker(mve_save, **args_mvex)
+mock_mve = MotionVectorProcessorMocker(mve_save, **args_mvprocessor)
+mock_yolo_maskgen = MaskGeneratorMocker(mve_save, **args_yolo)
 
 counter = 0
 
+target_mcbb: BoundingBoxXY1XY2 = numpy.array((0, 0, mv_frame.shape[1], mv_frame.shape[0])).astype(numpy.float16)
+
 while(True):
-    # Capture the video frame by frame
-    start_time = time.perf_counter()
-
-    # using constant multiprocessing(faster)
-    data = decoder.read()
-    mock_mve.append(data)
-    available, fr, fl = data
-
     counter += 1
+    start_time = time.perf_counter()
+    # Capture the video frame by frame
 
-    if cv2.waitKey(1) & 0xFF == ord('q') or not available:
+    if cv2.waitKey(1) & 0xFF == ord('q') or not frame_data[0]:
         decoder.stop()
         break
 
-    mask_data = yolo_maskgen.forward_once_with_mcbb(fr)
-    mock_maskgen.append(mask_data)
+    rgb_frame: FrameRGB = frame_data[1]
+    raw_mv: RawMotionVectors = frame_data[2]
 
-    fl = MotionVectorExtractor.rescale_mv(fl, 128, 1/2*args_mvex["bound"])
+    mv_frame: MotionVectorFrame = mv_processor.process(raw_mv)
+    mock_mve.append(mv_frame)
+    mv_frame = Utilities.bound_motion_frame(mv_frame.copy(), 128, 255/(2*args_mvprocessor["bound"]))
 
-    fl_x = fl[..., 0]
-    fl_y = fl[..., 1]
+    start_time = time.perf_counter()
+    mask_data: MaskWithMostCenterBoundingBoxData = yolo_maskgen.forward_once_with_mcbb(rgb_frame)
+    mock_yolo_maskgen.append(mask_data)
+    timer_avg.append(1/((time.perf_counter()-start_time)))
 
-    # letterbox no need, decoder with letterbox enabled
-    # fr = rev_letterbox(fr, 320)
-    # fl_x = rev_letterbox(fl_x, 320)
-    # fl_y = rev_letterbox(fl_y, 320)
+    fr = cv2.resize(rgb_frame, (mv_frame.shape[1], mv_frame.shape[0]))
 
-    # using threading, (slower, avg 48fps, 1% 30fps )
-    # data = decoder.read_while_process(yolo_maskgen.generate_once)
-    # available, fr, fl = data[0]
+    fl_x = mv_frame[:, :, 0]
+    fl_y = mv_frame[:, :, 1]
 
-    # if cv2.waitKey(1) & 0xFF == ord('q') or not available:
-    #     decoder.stop()
-    #     break
+    mcbb: BoundingBoxXY1XY2 = mask_data[2]
+    target_mcbb = (target_mcbb + (mcbb.astype(numpy.float32) - target_mcbb) * 0.1)
+    mask_frame: SegmentationMask = mask_data[1]
 
-    # fl_x = fl[..., 0]
-    # fl_y = fl[..., 1]
-    # mask_data = data[1]
-
-    mcbb = mask_data[2]
-    mask_data = mask_data[1]
-
-    mask_data_uint = (mask_data.astype(numpy.uint8)*255)
+    mask_frame_uint = (mask_frame.astype(numpy.uint8)*255)
 
     combine_to_mask = numpy.dstack(
         (
@@ -284,13 +225,13 @@ while(True):
         )
     )
 
-    combine_to_mask[~mask_data] = (255, 255, 255, 128, 128)
+    combine_to_mask[~mask_frame] = (255, 255, 255, 128, 128)
 
-    timer_avg.append(1/((time.perf_counter()-start_time)))
     tl_avg = list(timer_avg)
     tl_avg.sort()
     tl_avg_10 = tl_avg[:len(timer_avg)//10]
     tl_avg_1 = tl_avg[:len(timer_avg)//100]
+    print(sum(timer_avg)//len(timer_avg), sum(tl_avg_10)//len(tl_avg_10), sum(tl_avg_1)//len(tl_avg_1), end="\n\n")
     print(sum(timer_avg)//len(timer_avg), sum(tl_avg_10)//len(tl_avg_10), sum(tl_avg_1)//len(tl_avg_1), end="\r")
 
     fmasked = combine_to_mask[:, :, 0:3]
@@ -303,41 +244,44 @@ while(True):
     fl_x_s = numpy.dstack((fl_x_masked, fl_x_masked, fl_x_masked))
     fl_y_s = numpy.dstack((fl_y_masked, fl_y_masked, fl_y_masked))
 
-    mf = numpy.dstack((mask_data_uint, mask_data_uint, mask_data_uint))
+    mf = numpy.dstack((mask_frame_uint, mask_frame_uint, mask_frame_uint))
 
-    fr = MaskGenerator.crop_to_bb_and_resize(fr, mcbb)
+    fmasked_crop = Utilities.crop_to_bb_and_resize(fmasked, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_x_s_crop = Utilities.crop_to_bb_and_resize(fl_x_s, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_y_s_crop = Utilities.crop_to_bb_and_resize(fl_y_s, target_mcbb, fr.shape[:2], fr.shape[:2])
 
-    frshow = numpy.hstack((fr, mf, fmasked))
-    flxshow = numpy.hstack((fl_x, mf, fl_x_s))
-    flyshow = numpy.hstack((fl_y, mf, fl_y_s))
+    fr = cv2.rectangle(fr, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    fl_x = cv2.rectangle(fl_x, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    fl_y = cv2.rectangle(fl_y, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    mf = cv2.rectangle(mf, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (255, 255, 255), thickness=3, lineType=cv2.LINE_AA)
 
-    flxy_masked = flow_utils.flow_to_rgb(numpy.dstack((fl_x_masked, fl_y_masked)))
-    flxy_masked = cv2.cvtColor(flxy_masked, cv2.COLOR_RGB2BGR)  # type: ignore
-
-    flxyrgb = numpy.hstack((fl_x_s, fl_y_s, flxy_masked))
+    frshow = numpy.hstack((fr, mf, fmasked, fmasked_crop))
+    flxshow = numpy.hstack((fl_x, mf, fl_x_s, fl_x_s_crop))
+    flyshow = numpy.hstack((fl_y, mf, fl_y_s, fl_y_s_crop))
 
     fshow = numpy.vstack(
         (
             frshow,
             flxshow,
             flyshow,
-            flxyrgb
+            # flxyrgb
         )
     )
 
     cv2.imshow('frame', fshow)
 
-    # # the 'q' button is set as the
-    # # quitting button you may use any
-    # # desired button of your choice
+    # the 'q' button is set as the
+    # quitting button you may use any
+    # desired button of your choice
 
+    frame_data = decoder.read()
 
 # After the loop release the cap object
 # Destroy all the windows
 decoder.stop()
 cv2.destroyAllWindows()
 mock_mve.save()
-mock_maskgen.save()
+mock_yolo_maskgen.save()
 mve_save.close()
 print(counter, f"{round((101-counter)/101, 1)}% loss")
 
@@ -375,77 +319,58 @@ print(counter, f"{round((101-counter)/101, 1)}% loss")
 # bases pad size = test & attn reso - (ratio_res * 125)
 
 # ----------- LOADING
-args_mvex = {
-    "path":  video_path,
+decoder = VideoDecoderProcessSpawner(**args_decoder).start()
+frame_data: DecodedData = decoder.read()
+
+assert frame_data[0], "DECODER ERROR, ABORTING..."
+
+args_mvprocessor = {
+    "input_size": frame_data[1].shape[:2],
     "bound":  32,
-    "raw_motion_vectors": True,
-    "camera_realtime": False,
-    "camera_update_rate":  300,
-    "camera_buffer_size":  0,
-    "letterboxed": True,
-    "new_shape": 640,
-    "box": False,
-    "color": (114, 114, 114, 128, 128),
-    "stride":  32,
+    "raw_motion_vectors": False,
 }
+mv_processor = MotionVectorProcessor(**args_mvprocessor)
+mv_frame: MotionVectorFrame = mv_processor.process(frame_data[2])
+
 
 mve_load = h5py.File("try_mve.h5", mode="r")
-
-yolo_maskgen = MaskMocker(
-    mve_load,
-    './libs/yolov7-mask/yolov7-mask.pt',
-    './libs/yolov7-mask/data/hyp.scratch.mask.yaml',
-    0.5,
-    0.45)
-
-decoder = MotionVectorMocker(mve_load, **args_mvex)
-yolo_maskgen.load()
-decoder.load()
+mv_processor_mock = MotionVectorProcessorMocker(mve_load, **args_mvprocessor)
+mv_processor_mock.load()
+mock_yolo_maskgen = MaskGeneratorMocker(mve_load, **args_yolo)
+mock_yolo_maskgen.load()
 
 counter = 0
 
+target_mcbb: BoundingBoxXY1XY2 = numpy.array((0, 0, mv_frame.shape[1], mv_frame.shape[0])).astype(numpy.float16)
+
 while(True):
-    # Capture the video frame by frame
-    start_time = time.perf_counter()
-
-    # using constant multiprocessing(faster)
-    data = decoder.read()
-    available, fr, fl = data
-
     counter += 1
+    start_time = time.perf_counter()
+    # Capture the video frame by frame
 
-    if cv2.waitKey(1) & 0xFF == ord('q') or not available:
+    if cv2.waitKey(1) & 0xFF == ord('q') or not frame_data[0]:
         decoder.stop()
         break
+    # real
+    rgb_frame: FrameRGB = frame_data[1]
+    raw_mv: RawMotionVectors = frame_data[2]
 
-    mask_data = yolo_maskgen.forward_once_with_mcbb(fr)
+    mv_frame: MotionVectorFrame = mv_processor.process(raw_mv)
 
-    fl = MotionVectorExtractor.rescale_mv(fl, 128, 1/2*args_mvex["bound"])
+    start_time = time.perf_counter()
+    mask_data: MaskWithMostCenterBoundingBoxData = yolo_maskgen.forward_once_with_mcbb(rgb_frame)
+    timer_avg.append(1/((time.perf_counter()-start_time)))
 
-    fl_x = fl[..., 0]
-    fl_y = fl[..., 1]
+    fr = cv2.resize(rgb_frame, (mv_frame.shape[1], mv_frame.shape[0]))
 
-    # letterbox no need, decoder with letterbox enabled
-    # fr = rev_letterbox(fr, 320)
-    # fl_x = rev_letterbox(fl_x, 320)
-    # fl_y = rev_letterbox(fl_y, 320)
+    fl_x = mv_frame[:, :, 0]
+    fl_y = mv_frame[:, :, 1]
 
-    # using threading, (slower, avg 48fps, 1% 30fps )
-    # data = decoder.read_while_process(yolo_maskgen.generate_once)
-    # available, fr, fl = data[0]
+    mcbb: BoundingBoxXY1XY2 = mask_data[2]
+    target_mcbb = (target_mcbb + (mcbb.astype(numpy.float32) - target_mcbb) * 0.1)
+    mask_frame: SegmentationMask = mask_data[1]
 
-    # if cv2.waitKey(1) & 0xFF == ord('q') or not available:
-    #     decoder.stop()
-    #     break
-
-    # fl_x = fl[..., 0]
-    # fl_y = fl[..., 1]
-    # mask_data = data[1]
-
-    mcbb = mask_data[2]
-    mask_data = mask_data[1]
-
-    mask_data_uint = (mask_data.astype(numpy.uint8)*255)
+    mask_frame_uint = (mask_frame.astype(numpy.uint8)*255)
 
     combine_to_mask = numpy.dstack(
         (
@@ -455,13 +380,13 @@ while(True):
         )
     )
 
-    combine_to_mask[~mask_data] = (255, 255, 255, 128, 128)
+    combine_to_mask[~mask_frame] = (255, 255, 255, 128, 128)
 
-    timer_avg.append(1/((time.perf_counter()-start_time)))
     tl_avg = list(timer_avg)
     tl_avg.sort()
     tl_avg_10 = tl_avg[:len(timer_avg)//10]
     tl_avg_1 = tl_avg[:len(timer_avg)//100]
+    print(sum(timer_avg)//len(timer_avg), sum(tl_avg_10)//len(tl_avg_10), sum(tl_avg_1)//len(tl_avg_1), end="\n\n")
     print(sum(timer_avg)//len(timer_avg), sum(tl_avg_10)//len(tl_avg_10), sum(tl_avg_1)//len(tl_avg_1), end="\r")
 
     fmasked = combine_to_mask[:, :, 0:3]
@@ -474,29 +399,94 @@ while(True):
     fl_x_s = numpy.dstack((fl_x_masked, fl_x_masked, fl_x_masked))
     fl_y_s = numpy.dstack((fl_y_masked, fl_y_masked, fl_y_masked))
 
-    mf = numpy.dstack((mask_data_uint, mask_data_uint, mask_data_uint))
+    mf = numpy.dstack((mask_frame_uint, mask_frame_uint, mask_frame_uint))
 
-    fr = MaskGenerator.crop_to_bb_and_resize(fr, mcbb)
+    fmasked_crop = Utilities.crop_to_bb_and_resize(fmasked, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_x_s_crop = Utilities.crop_to_bb_and_resize(fl_x_s, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_y_s_crop = Utilities.crop_to_bb_and_resize(fl_y_s, target_mcbb, fr.shape[:2], fr.shape[:2])
 
-    frshow = numpy.hstack((fr, mf, fmasked))
-    flxshow = numpy.hstack((fl_x, mf, fl_x_s))
-    flyshow = numpy.hstack((fl_y, mf, fl_y_s))
+    fr = cv2.rectangle(fr, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    fl_x = cv2.rectangle(fl_x, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    fl_y = cv2.rectangle(fl_y, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    mf = cv2.rectangle(mf, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (255, 255, 255), thickness=3, lineType=cv2.LINE_AA)
 
-    flxy_masked = flow_utils.flow_to_rgb(numpy.dstack((fl_x_masked, fl_y_masked)))
-    flxy_masked = cv2.cvtColor(flxy_masked, cv2.COLOR_RGB2BGR)  # type:ignore
-
-    flxyrgb = numpy.hstack((fl_x_s, fl_y_s, flxy_masked))
+    frshow = numpy.hstack((fr, mf, fmasked, fmasked_crop))
+    flxshow = numpy.hstack((fl_x, mf, fl_x_s, fl_x_s_crop))
+    flyshow = numpy.hstack((fl_y, mf, fl_y_s, fl_y_s_crop))
 
     fshow = numpy.vstack(
         (
-            frshow,
+            # frshow,
             flxshow,
             flyshow,
-            flxyrgb
+            # flxyrgb
         )
     )
 
-    cv2.imshow('frame', fshow)
+    # mock
+    mv_frame: MotionVectorFrame = mv_processor_mock.process(raw_mv)
+
+    mask_data: MaskWithMostCenterBoundingBoxData = mock_yolo_maskgen.forward_once_with_mcbb(rgb_frame)
+
+    fl_x = mv_frame[:, :, 0]
+    fl_y = mv_frame[:, :, 1]
+
+    mcbb: BoundingBoxXY1XY2 = mask_data[2]
+    target_mcbb = (target_mcbb + (mcbb.astype(numpy.float32) - target_mcbb) * 0.1)
+    mask_frame: SegmentationMask = mask_data[1]
+
+    mask_frame_uint = (mask_frame.astype(numpy.uint8)*255)
+
+    combine_to_mask = numpy.dstack(
+        (
+            numpy.copy(fr),
+            numpy.copy(fl_x),
+            numpy.copy(fl_y)
+        )
+    )
+
+    combine_to_mask[~mask_frame] = (255, 255, 255, 128, 128)
+
+    fmasked = combine_to_mask[:, :, 0:3]
+    fl_x_masked = combine_to_mask[:, :, 3]
+    fl_y_masked = combine_to_mask[:, :, 4]
+
+    fl_x = numpy.dstack((fl_x, fl_x, fl_x))
+    fl_y = numpy.dstack((fl_y, fl_y, fl_y))
+
+    fl_x_s = numpy.dstack((fl_x_masked, fl_x_masked, fl_x_masked))
+    fl_y_s = numpy.dstack((fl_y_masked, fl_y_masked, fl_y_masked))
+
+    mf = numpy.dstack((mask_frame_uint, mask_frame_uint, mask_frame_uint))
+
+    fmasked_crop = Utilities.crop_to_bb_and_resize(fmasked, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_x_s_crop = Utilities.crop_to_bb_and_resize(fl_x_s, target_mcbb, fr.shape[:2], fr.shape[:2])
+    fl_y_s_crop = Utilities.crop_to_bb_and_resize(fl_y_s, target_mcbb, fr.shape[:2], fr.shape[:2])
+
+    fr = cv2.rectangle(fr, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    fl_x = cv2.rectangle(fl_x, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    fl_y = cv2.rectangle(fl_y, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+    mf = cv2.rectangle(mf, (int(target_mcbb[0]), int(target_mcbb[1])), (int(target_mcbb[2]), int(target_mcbb[3])), (255, 255, 255), thickness=3, lineType=cv2.LINE_AA)
+
+    frshow = numpy.hstack((fr, mf, fmasked, fmasked_crop))
+    flxshow = numpy.hstack((fl_x, mf, fl_x_s, fl_x_s_crop))
+    flyshow = numpy.hstack((fl_y, mf, fl_y_s, fl_y_s_crop))
+
+    fshow_mock = numpy.vstack(
+        (
+            # frshow,
+            flxshow,
+            flyshow,
+            # flxyrgb
+        )
+    )
+
+    cv2.imshow('frame', numpy.vstack((fshow, fshow_mock)))
+
+    frame_data = decoder.read()
+
+    print("MSE -> ", ((fshow - fshow_mock)**2).mean(axis=None), 1/((time.perf_counter()-start_time)), end="\n")  # type: ignore
+    print("MSE -> ", ((fshow - fshow_mock)**2).mean(axis=None), 1/((time.perf_counter()-start_time)), end="\r")  # type: ignore
 
     # # the 'q' button is set as the
     # # quitting button you may use any
