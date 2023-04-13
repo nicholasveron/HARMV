@@ -3,20 +3,19 @@
 # https://github.com/aler9/rtsp-simple-server#from-a-webcam
 # import the opencv library
 import cv2
-from importables.video_capturer import VideoCapturerProcessSpawner, FrameData
+from importables.video_decoder import VideoDecoderProcessSpawner, DecodedData
 import time
 
-webcam_ip = "rtsp://192.168.0.101:8554/cam"
-# webcam_ip = "rtsp://0.tcp.ap.ngrok.io:15225/cam"
+webcam_ip = "rtsp://NicholasXPS17:8554/cam"
 video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
 
 # webcam: realtime normal fps
 args = {
     "path": webcam_ip,
     "realtime": True,
-    "update_rate": 60,
+    "update_rate": 120,
 }
-sampling_rate = 30
+sampling_rate = 25
 
 # # webcam: not realtime, low sampling rate (should be lagging behind)
 # args = {
@@ -46,9 +45,9 @@ sampling_rate = 30
 args = {
     "path": video_path,
     "realtime": False,
-    "update_rate": 60,
+    "update_rate": 120,
 }
-sampling_rate = 30
+sampling_rate = 25
 
 # # video: realtime high sampling rate will duplicate frames ( <0% loss)
 # args = {
@@ -58,7 +57,7 @@ sampling_rate = 30
 # }
 # sampling_rate = 120
 
-video_cap = VideoCapturerProcessSpawner(**args).start()
+video_cap = VideoDecoderProcessSpawner(**args).start()
 counter = 0
 
 
@@ -66,7 +65,7 @@ while(True):
 
     start_time = time.perf_counter()
     # Capture the video frame by frame
-    data: FrameData = video_cap.read()
+    data: DecodedData = video_cap.read()
 
     counter += 1
 

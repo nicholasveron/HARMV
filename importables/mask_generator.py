@@ -1,28 +1,33 @@
 # pyright: reportPrivateImportUsage=false
-# pyright: reportGeneralTypeIssues=false
 """Mask Generator generates peoples mask using YOLOv7 - Mask from bgr frames"""
 
 import os
-import cv2
 import h5py
 import yaml
-import numba
 import numpy
 import torch
 import nebullvm
 import speedster
 import torchvision
 from torch import Tensor
-from typing import Union, Tuple
 from numpy import ndarray
 from collections import deque
 from detectron2.structures import Boxes
 from detectron2.modeling.poolers import ROIPooler
 from detectron2.layers import paste_masks_in_image
-
-
-MaskOnlyData = Tuple[bool, ndarray]
-MaskWithMCBB = Tuple[bool, ndarray, ndarray]
+from .utilities import Utilities
+from .custom_types import (
+    Tuple,
+    Union,
+    ColorRGB,
+    FrameRGB,
+    MaskOnlyData,
+    ResolutionHW,
+    IsHumanDetected,
+    SegmentationMask,
+    BoundingBoxXY1XY2,
+    MaskWithMostCenterBoundingBoxData,
+)
 
 
 class MaskGenerator:
@@ -33,12 +38,16 @@ class MaskGenerator:
                  hyperparameter_path: str,
                  confidence_threshold: float,
                  iou_threshold: float,
-                 target_input_size: int,
+                 target_size: int = 320,
+                 resize_result_to_original: bool = False,
                  optimize_model: bool = True,
                  target_device: Union[str, torch.device, None] = None,
                  letterbox_stride: int = 32,
                  letterbox_box_mode: bool = False,
-                 letterbox_color: tuple[int, int, int] = (114, 114, 114),
+                 letterbox_color: ColorRGB = (114, 114, 114),
+                 bounding_box_grouping_range_scale: float = 1,
+                 bounding_box_no_merge: bool = False,
+                 flip_bgr_rgb: bool = True,
                  ) -> None:
 
         print("Initializing mask generator...")
@@ -92,12 +101,18 @@ class MaskGenerator:
         self.__confidence_threshold: float = confidence_threshold
         self.__iou_threshold: float = iou_threshold
         self.__optimize_model: bool = optimize_model
+        self.__flip_bgr_rgb: bool = flip_bgr_rgb
 
         # letterbox params
-        self.__target_input_size: int = target_input_size
+        self.__target_size: int = target_size
+        self.__resize_result_to_original: bool = resize_result_to_original
         self.__letterbox_stride: int = letterbox_stride
         self.__letterbox_box_mode: bool = letterbox_box_mode
-        self.__letterbox_color: tuple[int, int, int] = letterbox_color
+        self.__letterbox_color: ColorRGB = letterbox_color
+        self.__bounding_box_grouping_range_scale: float = bounding_box_grouping_range_scale
+        self.__bounding_box_no_merge: bool = bounding_box_no_merge
+
+        # bounding box params
 
         print("Mask generator initialized")
 
@@ -255,7 +270,7 @@ class MaskGenerator:
                                           multi_label,
                                           max_wh,
                                           max_det
-                                          ))
+                                          ))  # type: ignore
 
         for future in futures:
             found_s, output_s, output_mask_s = torch.jit.wait(future)
@@ -303,7 +318,7 @@ class MaskGenerator:
     @staticmethod
     def __find_most_center_bb(
         bounding_boxes: Boxes,
-        frame_size: Tuple[int, int],
+        frame_size: ResolutionHW,
         grouping_range_scale: float = 1,
         no_merge_bounding_box=False
     ) -> Tuple[Boxes, Boxes]:
@@ -343,255 +358,6 @@ class MaskGenerator:
 
         return center_bounding_box, bounding_boxes
 
-    @staticmethod
-    @numba.njit(fastmath=True, parallel=True)
-    def bounding_box_resize(
-        bounding_box: ndarray,
-        original_size: Tuple[int, int],
-        target_size: Tuple[int, int]
-    ) -> ndarray:
-        """Resizes bounding box from original size (h,w) to target size(h,w).
-        Bounding box input must in dtype float64, then result convert to int16"""
-
-        bounding_box = bounding_box.copy()
-        width_scale: float = target_size[1] / original_size[1]
-        height_scale: float = target_size[0] / original_size[0]
-        scale_matrix: ndarray = numpy.array(
-            [
-                [width_scale, 0],
-                [0, height_scale]
-            ], dtype=bounding_box.dtype
-        )
-        xy_1_pos: ndarray = numpy.array([bounding_box[0], bounding_box[1]])
-        xy_2_pos: ndarray = numpy.array([bounding_box[2], bounding_box[3]])
-        xy_1_scaled: ndarray = numpy.zeros_like(xy_1_pos)
-        xy_2_scaled: ndarray = numpy.zeros_like(xy_2_pos)
-        numpy.dot(scale_matrix, xy_1_pos, xy_1_scaled)
-        numpy.dot(scale_matrix, xy_2_pos, xy_2_scaled)
-
-        bounding_box[0], bounding_box[1] = xy_1_scaled
-        bounding_box[2], bounding_box[3] = xy_2_scaled
-
-        return bounding_box
-
-    @staticmethod
-    @numba.njit(fastmath=True, parallel=True)
-    def bounding_box_reshape_to_ratio(
-        bounding_box: ndarray,
-        target_size: ndarray,
-        aggressive: bool = True
-    ) -> ndarray:
-        """Reshapes bounding box to target size's (h,w) ratio.
-        Bounding box input must in dtype int16"""
-
-        bounding_box_w: int = bounding_box[2] - bounding_box[0]
-        bounding_box_h: int = bounding_box[3] - bounding_box[1]
-        bounding_box_size: ndarray = numpy.array([bounding_box_h, bounding_box_w])
-
-        ratios: ndarray = target_size / bounding_box_size
-        if ratios[0] == ratios[1]:
-            # if ratio already correct
-            return bounding_box.astype(numpy.int64)
-
-        pivot_idx: int = int(numpy.argmin(ratios))
-        inv_pivot_idx: int = pivot_idx * -1 + 1
-
-        if aggressive:
-            # if agresive (ignoring the rounding problem)
-            target_scale: float = ratios[pivot_idx]
-            scaled_target_size = target_size[inv_pivot_idx] / target_scale
-            delta: float = scaled_target_size - bounding_box_size[inv_pivot_idx]
-            delta /= 2
-            bounding_box[0+pivot_idx] = bounding_box[0+pivot_idx] - int(round(delta - 0.1))
-            bounding_box[2+pivot_idx] = bounding_box[2+pivot_idx] + int(round(delta + 0.1))
-            if bounding_box[0+pivot_idx] < 0:
-                bounding_box[2+pivot_idx] += abs(bounding_box[0+pivot_idx])
-                bounding_box[0+pivot_idx] = 0
-            if bounding_box[2+pivot_idx] > target_size[inv_pivot_idx]:
-                bounding_box[0+pivot_idx] -= (bounding_box[2+pivot_idx] - target_size[inv_pivot_idx])
-                bounding_box[2+pivot_idx] = target_size[inv_pivot_idx]
-
-            return bounding_box.astype(numpy.int64)
-
-        if target_size[pivot_idx] / bounding_box_size[pivot_idx] == 2:
-            # if pivot size is exacly half
-            scaled_target_size = target_size[inv_pivot_idx] // 2
-            delta: float = scaled_target_size - bounding_box_size[inv_pivot_idx]
-            delta /= 2
-            bounding_box[0+pivot_idx] = bounding_box[0+pivot_idx] - int(round(delta - 0.1))
-            bounding_box[2+pivot_idx] = bounding_box[2+pivot_idx] + int(round(delta + 0.1))
-            if bounding_box[0+pivot_idx] < 0:
-                bounding_box[2+pivot_idx] += abs(bounding_box[0+pivot_idx])
-                bounding_box[0+pivot_idx] = 0
-            if bounding_box[2+pivot_idx] > scaled_target_size:
-                bounding_box[0+pivot_idx] -= (bounding_box[2+pivot_idx] - scaled_target_size)
-                bounding_box[2+pivot_idx] = scaled_target_size
-
-            return bounding_box.astype(numpy.int64)
-
-        if bounding_box_size[pivot_idx] >= target_size[pivot_idx] // 2:
-            # if pivot size more than half (correction will cause stretch)
-            return numpy.array((0, 0, target_size[1], target_size[0])).astype(numpy.int64)
-
-        # fix ratio
-
-        # find closest
-        offset: int = 1
-        while target_size[pivot_idx] % (bounding_box_size[pivot_idx] + offset) != 0:
-            offset += 1
-
-        # fix pivot
-        delta_pivot: float = offset/2
-        bounding_box[0+inv_pivot_idx] = bounding_box[0+inv_pivot_idx] - int(round(delta_pivot - 0.1))
-        bounding_box[2+inv_pivot_idx] = bounding_box[2+inv_pivot_idx] + int(round(delta_pivot + 0.1))
-        if bounding_box[0+inv_pivot_idx] < 0:
-            bounding_box[2+inv_pivot_idx] += abs(bounding_box[0+inv_pivot_idx])
-            bounding_box[0+inv_pivot_idx] = 0
-        if bounding_box[2+inv_pivot_idx] > target_size[pivot_idx]:
-            bounding_box[0+inv_pivot_idx] -= (bounding_box[2+inv_pivot_idx] - target_size[pivot_idx])
-            bounding_box[2+inv_pivot_idx] = target_size[pivot_idx]
-
-        target_scale: int = target_size[pivot_idx] // (bounding_box_size[pivot_idx] + offset)
-
-        delta: float = target_size[inv_pivot_idx] // target_scale - bounding_box_size[inv_pivot_idx]
-        delta /= 2
-        bounding_box[0+pivot_idx] = bounding_box[0+pivot_idx] - int(round(delta - 0.1))
-        bounding_box[2+pivot_idx] = bounding_box[2+pivot_idx] + int(round(delta + 0.1))
-        if bounding_box[0+pivot_idx] < 0:
-            bounding_box[2+pivot_idx] += abs(bounding_box[0+pivot_idx])
-            bounding_box[0+pivot_idx] = 0
-        if bounding_box[2+pivot_idx] > target_size[inv_pivot_idx]:
-            bounding_box[0+pivot_idx] -= (bounding_box[2+pivot_idx] - target_size[inv_pivot_idx])
-            bounding_box[2+pivot_idx] = target_size[inv_pivot_idx]
-
-        return bounding_box.astype(numpy.int64)
-
-    @staticmethod
-    def crop_to_bb_and_resize(
-        image: ndarray,
-        bounding_box: ndarray,
-        original_size: Tuple[int, int],
-        target_size: Tuple[int, int] = (-1, -1),
-        aggressive: bool = True
-    ) -> ndarray:
-        """Crops image using bounding box, and resizes the image back to original size (h,w) or target size (h,w)"""
-
-        image_size: Tuple[int, int] = image.shape[:2]
-
-        if target_size == (-1, -1):
-            target_size: ndarray = numpy.array(image_size)
-        else:
-            target_size: ndarray = numpy.array(target_size)
-
-        bounding_box = MaskGenerator.bounding_box_reshape_to_ratio(bounding_box.astype(numpy.int16), target_size, aggressive)
-
-        if image_size != original_size:
-            bounding_box = MaskGenerator.bounding_box_resize(bounding_box.astype(numpy.float64), original_size, image_size).astype(numpy.int16)
-
-        cropped_image: ndarray = image[int(bounding_box[1]):int(bounding_box[3]), int(bounding_box[0]):int(bounding_box[2])].copy()
-        bounding_box_w: int = bounding_box[2] - bounding_box[0]
-        bounding_box_h: int = bounding_box[3] - bounding_box[1]
-        bounding_box_size: ndarray = numpy.array([bounding_box_h, bounding_box_w])
-        if any(bounding_box_size != target_size):
-            return cv2.resize(cropped_image, (target_size[1], target_size[0]), interpolation=cv2.INTER_NEAREST)
-
-        return cropped_image
-
-    @staticmethod
-    @numba.njit(fastmath=True)
-    def __letterbox_core(
-        shape: tuple[int, int],
-        target_size: int,
-        stride: int,
-        box: bool,
-    ) -> tuple[tuple[int, int], tuple[int, int, int, int]]:
-        # Scale ratio (new / old)
-        r = max(shape)
-        r = target_size / r
-
-        # Compute padding
-        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-        dw, dh = target_size - new_unpad[0], target_size - new_unpad[1]  # wh padding
-        if not box:
-            dw, dh = dw % stride, dh % stride  # wh padding
-        dw /= 2  # divide padding into 2 sides
-        dh /= 2
-
-        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-
-        return new_unpad, (top, bottom, left, right)
-
-    @staticmethod
-    def letterbox(
-            image: ndarray,
-            target_size: int = 320,
-            color: tuple[int, ...] = (114, 114, 114),
-            stride: int = 32,
-            box: bool = False
-    ) -> tuple[ndarray, tuple[int, int], int, int, int, int]:
-        """Resize and pad image while meeting stride-multiple constraints.
-        Returns letterboxed_image_numpy_array, original_size,
-        top_pad, bottom_pad, left_pad, right_pad"""
-
-        original_size = image.shape[:2]  # current shape [height, width]
-
-        new_unpad, (top, bottom, left, right) = MaskGenerator.__letterbox_core(
-            original_size, target_size, stride, box
-        )
-
-        if original_size[::-1] != new_unpad:  # resize
-            image = cv2.resize(image, new_unpad, interpolation=cv2.INTER_NEAREST)  # switch to NEAREST for faster and sharper interp
-        image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
-        return image, original_size, top, bottom, left, right
-
-    @staticmethod
-    def unletterbox(
-        image: ndarray,
-        original_size: Tuple[int, int],
-        top_pad: int,
-        bottom_pad: int,
-        left_pad: int,
-        right_pad: int,
-    ) -> ndarray:
-        """Reverses letterbox process"""
-
-        is_boolean = False
-        if image.dtype == bool:
-            is_boolean = True
-            image = image*255
-        image = image[top_pad:image.shape[0] - bottom_pad, left_pad:image.shape[1] - right_pad]
-        image = cv2.resize(image, original_size[::-1], interpolation=cv2.INTER_NEAREST)  # switch to NEAREST for faster and sharper interp
-        if is_boolean:
-            image = image > 127
-        return image
-
-    @staticmethod
-    def unletterbox_bounding_box(
-        bounding_box: ndarray,
-        letterboxed_size: Tuple[int, int],
-        original_size: Tuple[int, int],
-        top_pad: int,
-        bottom_pad: int,
-        left_pad: int,
-        right_pad: int,
-    ) -> ndarray:
-        """Reverses letterbox process to bounding box"""
-
-        letterboxed_size: ndarray = numpy.array(
-            (
-                letterboxed_size[0] - (top_pad + bottom_pad),
-                letterboxed_size[1] - (left_pad + right_pad)
-            )
-        )
-        bounding_box = bounding_box.copy()
-        bounding_box[0] = max(bounding_box[0] - left_pad, 0)
-        bounding_box[1] = max(bounding_box[1] - top_pad, 0)
-        bounding_box[2] = min(bounding_box[2] - left_pad, letterboxed_size[1])
-        bounding_box[3] = min(bounding_box[3] - top_pad, letterboxed_size[0])
-        bounding_box = MaskGenerator.bounding_box_resize(bounding_box.astype(numpy.float64), letterboxed_size, original_size).astype(numpy.int16)
-        return bounding_box
-
     def __first_input(self, model_input: Tensor) -> None:
 
         print("Warming up masker model (yolov7-mask)...")
@@ -602,7 +368,7 @@ class MaskGenerator:
 
         if self.__optimize_model:
 
-            true_device: nebullvm.tools.base.DeviceType = nebullvm.tools.base.DeviceType.GPU if self.__device.type == "cuda" else nebullvm.tools.base.DeviceType.CPU
+            true_device: nebullvm.tools.base.DeviceType = nebullvm.tools.base.DeviceType.GPU if self.__device.type == "cuda" else nebullvm.tools.base.DeviceType.CPU  # type: ignore
 
             root_folder: str = os.path.abspath("./optimized_models/masker")
             os.makedirs(root_folder, exist_ok=True)
@@ -613,7 +379,7 @@ class MaskGenerator:
                 model_loaded: bool = False
                 for optimized_models in available_optimized_models:
                     optimized_models: str = os.path.join(root_folder, optimized_models)
-                    preload_model: speedster.BaseInferenceLearner = speedster.load_model(optimized_models)
+                    preload_model: speedster.BaseInferenceLearner = speedster.load_model(optimized_models)  # type: ignore
                     if preload_model.network_parameters.input_infos[0].size == list(model_input.shape) and preload_model.device.type == true_device:
                         print("Last compatible optimized model found (yolov7-mask), testing...")
                         with torch.inference_mode():
@@ -643,8 +409,8 @@ class MaskGenerator:
                 # techniques                     fp16
 
                 # input data
-                rand_input_data: list[Tuple[Tensor, Tuple[Tensor, ...]]] = [((torch.rand_like(model_input), ), torch.zeros(1)) for _ in range(100)]
-                preoptimize_model: speedster.BaseInferenceLearner = speedster.optimize_model(self.__model,
+                rand_input_data: list[Tuple[Tensor, Tuple[Tensor, ...]]] = [((torch.rand_like(model_input), ), torch.zeros(1)) for _ in range(100)]  # type: ignore
+                preoptimize_model: speedster.BaseInferenceLearner = speedster.optimize_model(self.__model,  # type: ignore
                                                                                              rand_input_data,
                                                                                              store_latencies=True,
                                                                                              metric_drop_ths=10e-2,
@@ -673,12 +439,12 @@ class MaskGenerator:
         self.__is_traced = True
         print("Masker model (yolov7-mask) warmed up")
 
-    def forward_once_maskonly(self, image: ndarray, flip_bgr_rgb: bool = True) -> MaskOnlyData:
+    def forward_once_maskonly(self, image: FrameRGB) -> MaskOnlyData:
         """Generate detected people mask from image provided"""
 
-        image, original_size, top_pad, bottom_pad, left_pad, right_pad = MaskGenerator.letterbox(
+        image, original_size, top_pad, bottom_pad, left_pad, right_pad = Utilities.letterbox(
             image,
-            self.__target_input_size,
+            self.__target_size,
             self.__letterbox_color,
             self.__letterbox_stride,
             self.__letterbox_box_mode
@@ -688,7 +454,7 @@ class MaskGenerator:
 
         tensor_input = tensor_input.permute(2, 0, 1)
 
-        if flip_bgr_rgb:
+        if self.__flip_bgr_rgb:
             tensor_input = tensor_input[None, [2, 1, 0]]
         else:
             tensor_input = tensor_input[None, ...]
@@ -736,19 +502,24 @@ class MaskGenerator:
 
             # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
             total_mask: Tensor = pred_masks.any(dim=0)
-            total_mask_np: ndarray = total_mask.to("cpu").numpy()
-            total_mask_np = MaskGenerator.unletterbox(total_mask_np, original_size, top_pad, bottom_pad, left_pad, right_pad)
+            total_mask_np: SegmentationMask = total_mask.to("cpu").numpy()
+            total_mask_np = Utilities.unletterbox(
+                total_mask_np,
+                original_size,
+                top_pad, bottom_pad, left_pad, right_pad,
+                self.__resize_result_to_original
+            )
 
             result = (True, total_mask_np)
 
         return result
 
-    def forward_once_with_mcbb(self, image: ndarray, flip_bgr_rgb: bool = True, grouping_range_scale: float = 1, no_merge_bounding_box=False) -> MaskWithMCBB:
+    def forward_once_with_mcbb(self, image: FrameRGB) -> MaskWithMostCenterBoundingBoxData:
         """Generate detected people mask from letterboxed image provided with most center bounding box"""
 
-        image, original_size, top_pad, bottom_pad, left_pad, right_pad = MaskGenerator.letterbox(
+        image, original_size, top_pad, bottom_pad, left_pad, right_pad = Utilities.letterbox(
             image,
-            self.__target_input_size,
+            self.__target_size,
             self.__letterbox_color,
             self.__letterbox_stride,
             self.__letterbox_box_mode
@@ -759,7 +530,7 @@ class MaskGenerator:
 
         tensor_input = tensor_input.permute(2, 0, 1)
 
-        if flip_bgr_rgb:
+        if self.__flip_bgr_rgb:
             tensor_input = tensor_input[None, [2, 1, 0]]
         else:
             tensor_input = tensor_input[None, ...]
@@ -795,7 +566,7 @@ class MaskGenerator:
             self.__iou_threshold
         )
 
-        result: MaskWithMCBB = False, numpy.zeros(original_size, dtype=bool), numpy.array((0, 0, *original_size[::-1]), dtype=numpy.int16)
+        result: MaskWithMostCenterBoundingBoxData = False, numpy.zeros(original_size, dtype=bool), numpy.array((0, 0, *original_size[::-1]), dtype=numpy.int16)
 
         if found_s:
             pred: Tensor = output_s
@@ -807,24 +578,26 @@ class MaskGenerator:
 
             # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
             total_mask: Tensor = pred_masks.any(dim=0)
-            total_mask_np: ndarray = total_mask.to("cpu").numpy()
-            total_mask_np = MaskGenerator.unletterbox(
+            total_mask_np: SegmentationMask = total_mask.to("cpu").numpy()
+            total_mask_np = Utilities.unletterbox(
                 total_mask_np,
                 original_size,
                 top_pad,
                 bottom_pad,
                 left_pad,
-                right_pad
+                right_pad,
+                self.__resize_result_to_original
             )
 
-            most_center_bounding_box, bboxes = MaskGenerator.__find_most_center_bb(bboxes, (h, w), grouping_range_scale, no_merge_bounding_box)
+            most_center_bounding_box, bboxes = MaskGenerator.__find_most_center_bb(bboxes, (h, w), self.__bounding_box_grouping_range_scale, self.__bounding_box_no_merge)
             most_center_bounding_box_tensor: Tensor = torch.clamp_min(most_center_bounding_box.tensor, 0)
-            most_center_bounding_box_np: ndarray = numpy.around((most_center_bounding_box_tensor.to("cpu").numpy()[0].astype(numpy.uint16)))
-            most_center_bounding_box_np = MaskGenerator.unletterbox_bounding_box(
+            most_center_bounding_box_np: BoundingBoxXY1XY2 = numpy.around((most_center_bounding_box_tensor.to("cpu").numpy()[0].astype(numpy.uint16)))
+            most_center_bounding_box_np = Utilities.unletterbox_bounding_box(
                 most_center_bounding_box_np,
                 letterbox_size,
                 original_size,
-                top_pad, bottom_pad, left_pad, right_pad
+                top_pad, bottom_pad, left_pad, right_pad,
+                self.__resize_result_to_original
             )
 
             result = (True, total_mask_np, most_center_bounding_box_np)
@@ -832,7 +605,7 @@ class MaskGenerator:
         return result
 
 
-class MaskMocker(MaskGenerator):
+class MaskGeneratorMocker(MaskGenerator):
     """Writes and reads generated mask and most center bounding box (MCBB) to and from a file, mocking MaskGenerator behaviour"""
 
     MASK_PATH = "masks"
@@ -840,14 +613,12 @@ class MaskMocker(MaskGenerator):
     MASK_EXIST_PATH = "masks_exist"
     MASK_HWC_ATTR = "mask_hwc"
     MASK_COUNT_ATTR = "mask_count"
-    MASK_TARGET_INPUT_SIZE_ATTR = "mask_target_input_size"
 
     def __init__(self, h5py_instance: h5py.File, *args, **kwargs) -> None:
-        self.__mask: deque[ndarray] = deque()
-        self.__mask_mcbb: deque[ndarray] = deque()
-        self.__mask_exist: deque[bool] = deque()
+        self.__mask: deque[SegmentationMask] = deque()
+        self.__mask_mcbb: deque[BoundingBoxXY1XY2] = deque()
+        self.__mask_exist: deque[IsHumanDetected] = deque()
         self.__h5py_instance: h5py.File = h5py_instance
-        self.__kwargs: dict = kwargs
 
     def load(self) -> bool:
         """Loads masks and most center bounding box (MCBB) from file to queues"""
@@ -899,12 +670,11 @@ class MaskMocker(MaskGenerator):
 
         self.__h5py_instance.attrs[self.MASK_HWC_ATTR] = self.__mask[0].shape
         self.__h5py_instance.attrs[self.MASK_COUNT_ATTR] = len(self.__mask)
-        self.__h5py_instance.attrs[self.MASK_TARGET_INPUT_SIZE_ATTR] = self.__kwargs["target_input_size"]
 
         self.flush()
         return True
 
-    def append(self, data: MaskWithMCBB) -> None:
+    def append(self, data: MaskWithMostCenterBoundingBoxData) -> None:
         """Appends masks and most center bounding box (MCBB) to respective queues"""
         self.__mask_exist.append(data[0])
         self.__mask.append(data[1].copy())
@@ -920,16 +690,16 @@ class MaskMocker(MaskGenerator):
         """Pops mask from queue simulates MaskGenerator's forward_once_maskonly"""
         if len(self.__mask) <= 0:
             return False, numpy.empty((0))
-        mask: ndarray = self.__mask.popleft()
-        mask_exist: bool = self.__mask_exist.popleft()
+        mask: SegmentationMask = self.__mask.popleft()
+        mask_exist: IsHumanDetected = self.__mask_exist.popleft()
         _ = self.__mask_mcbb.popleft()
         return mask_exist, mask
 
-    def forward_once_with_mcbb(self, *args, **kwargs) -> MaskWithMCBB:
+    def forward_once_with_mcbb(self, *args, **kwargs) -> MaskWithMostCenterBoundingBoxData:
         """Pops mask and most center bounding box (MCBB) from queue simulates MaskGenerator's forward_once_maskonly"""
         if len(self.__mask) <= 0:
             return False, numpy.zeros(0), numpy.zeros(0)
-        mask: ndarray = self.__mask.popleft()
-        mask_mcbb = self.__mask_mcbb.popleft()
-        mask_exist: bool = self.__mask_exist.popleft()
+        mask: SegmentationMask = self.__mask.popleft()
+        mask_mcbb: BoundingBoxXY1XY2 = self.__mask_mcbb.popleft()
+        mask_exist: IsHumanDetected = self.__mask_exist.popleft()
         return mask_exist, mask, mask_mcbb
