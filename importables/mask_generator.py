@@ -8,6 +8,7 @@ import numpy
 import torch
 import nebullvm
 import speedster
+import traceback
 import torchvision
 from torch import Tensor
 from numpy import ndarray
@@ -377,9 +378,18 @@ class MaskGenerator:
 
             try:
                 model_loaded: bool = False
-                for optimized_models in available_optimized_models:
-                    optimized_models: str = os.path.join(root_folder, optimized_models)
-                    preload_model: speedster.BaseInferenceLearner = speedster.load_model(optimized_models)  # type: ignore
+                for optimized_model in available_optimized_models:
+                    optimized_model_path: str = os.path.join(root_folder, optimized_model)
+                    if not os.path.isdir(optimized_model_path):
+                        continue
+                    print(f"Trying to load optimized model -> {optimized_model}...")
+                    try:
+                        preload_model: speedster.BaseInferenceLearner = speedster.load_model(optimized_model_path)  # type: ignore
+                    except:
+                        print(f"Current folder is not an optimized model ({optimized_model}), skipping...")
+                        print("Error trace: \n\n")
+                        traceback.print_exc()
+                        continue
                     if preload_model.network_parameters.input_infos[0].size == list(model_input.shape) and preload_model.device.type == true_device:
                         print("Last compatible optimized model found (yolov7-mask), testing...")
                         with torch.inference_mode():
@@ -390,6 +400,10 @@ class MaskGenerator:
                         model_loaded = True
                         self.__model = preload_model
                         break
+                    else:
+                        print(
+                            f"Optimized model ({optimized_model}) is incompatible (input: [{list(model_input.shape)}, {preload_model.device.type}], model_input: [{preload_model.network_parameters.input_infos[0].size}, {true_device}), skipping...")
+                        continue
 
                 assert model_loaded, "Last compatible optimized model not found (yolov7-mask)"
                 print("Last optimized model successfully loaded (yolov7-mask)...")
@@ -490,7 +504,8 @@ class MaskGenerator:
             self.__iou_threshold
         )
 
-        result: MaskOnlyData = False, numpy.zeros(original_size, dtype=bool)
+        human_detected: IsHumanDetected = False
+        total_mask_np: SegmentationMask = numpy.zeros(image.shape[:-1], dtype=bool)
 
         if found_s:
             pred: Tensor = output_s
@@ -502,17 +517,21 @@ class MaskGenerator:
 
             # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
             total_mask: Tensor = pred_masks.any(dim=0)
-            total_mask_np: SegmentationMask = total_mask.to("cpu").numpy()
-            total_mask_np = Utilities.unletterbox(
-                total_mask_np,
-                original_size,
-                top_pad, bottom_pad, left_pad, right_pad,
-                self.__resize_result_to_original
-            )
+            total_mask_np = total_mask.to("cpu").numpy()
 
-            result = (True, total_mask_np)
+            human_detected = True
 
-        return result
+        total_mask_np = Utilities.unletterbox(
+            total_mask_np,
+            original_size,
+            top_pad,
+            bottom_pad,
+            left_pad,
+            right_pad,
+            self.__resize_result_to_original
+        )
+
+        return (human_detected, total_mask_np)
 
     def forward_once_with_mcbb(self, image: FrameRGB) -> MaskWithMostCenterBoundingBoxData:
         """Generate detected people mask from letterboxed image provided with most center bounding box"""
@@ -566,7 +585,9 @@ class MaskGenerator:
             self.__iou_threshold
         )
 
-        result: MaskWithMostCenterBoundingBoxData = False, numpy.zeros(original_size, dtype=bool), numpy.array((0, 0, *original_size[::-1]), dtype=numpy.int16)
+        human_detected: IsHumanDetected = False
+        total_mask_np: SegmentationMask = numpy.zeros(image.shape[:-1], dtype=bool)
+        most_center_bounding_box_np: BoundingBoxXY1XY2 = numpy.array((0, 0, image.shape[1], image.shape[0]), dtype=numpy.int16)
 
         if found_s:
             pred: Tensor = output_s
@@ -578,31 +599,33 @@ class MaskGenerator:
 
             # pytorch doesn't have a bitwise_or.reduce, so any in dimension 0 is used instead, improves time by half
             total_mask: Tensor = pred_masks.any(dim=0)
-            total_mask_np: SegmentationMask = total_mask.to("cpu").numpy()
-            total_mask_np = Utilities.unletterbox(
-                total_mask_np,
-                original_size,
-                top_pad,
-                bottom_pad,
-                left_pad,
-                right_pad,
-                self.__resize_result_to_original
-            )
+            total_mask_np = total_mask.to("cpu").numpy()
 
             most_center_bounding_box, bboxes = MaskGenerator.__find_most_center_bb(bboxes, (h, w), self.__bounding_box_grouping_range_scale, self.__bounding_box_no_merge)
             most_center_bounding_box_tensor: Tensor = torch.clamp_min(most_center_bounding_box.tensor, 0)
-            most_center_bounding_box_np: BoundingBoxXY1XY2 = numpy.around((most_center_bounding_box_tensor.to("cpu").numpy()[0].astype(numpy.uint16)))
-            most_center_bounding_box_np = Utilities.unletterbox_bounding_box(
-                most_center_bounding_box_np,
-                letterbox_size,
-                original_size,
-                top_pad, bottom_pad, left_pad, right_pad,
-                self.__resize_result_to_original
-            )
+            most_center_bounding_box_np = numpy.around((most_center_bounding_box_tensor.to("cpu").numpy()[0].astype(numpy.uint16)))
 
-            result = (True, total_mask_np, most_center_bounding_box_np)
+            human_detected = True
 
-        return result
+        total_mask_np = Utilities.unletterbox(
+            total_mask_np,
+            original_size,
+            top_pad,
+            bottom_pad,
+            left_pad,
+            right_pad,
+            self.__resize_result_to_original
+        )
+
+        most_center_bounding_box_np = Utilities.unletterbox_bounding_box(
+            most_center_bounding_box_np,
+            letterbox_size,
+            original_size,
+            top_pad, bottom_pad, left_pad, right_pad,
+            self.__resize_result_to_original
+        )
+
+        return (human_detected, total_mask_np, most_center_bounding_box_np)
 
 
 class MaskGeneratorMocker(MaskGenerator):
