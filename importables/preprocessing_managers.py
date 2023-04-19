@@ -291,4 +291,4 @@ class PreprocessingManagers:
             mock_opflowgen.save()
             h5_handle.close()
 
-            return self.__dataset_dictionary.append(dictionary_dict)
+            return self.__dataset_dictionary.append(dictionary_dict) and self.__dataset_dictionary.save()

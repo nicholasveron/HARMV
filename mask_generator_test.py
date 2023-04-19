@@ -25,7 +25,7 @@ from importables.motion_vector_processor import MotionVectorProcessor, MotionVec
 timer_avg = deque([0.]*101, maxlen=101)
 
 webcam_ip = "rtsp://NicholasXPS17:8554/cam"
-video_path = "/mnt/c/Skripsi/dataset-h264/R002A120/S018C001P008R002A120_rgb.mp4"
+video_path = "/mnt/c/Skripsi/dataset-h264/R001A016/S001C001P001R001A016_rgb.mp4"
 
 # ----------- NORMAL RUN
 args_decoder = {
