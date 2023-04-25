@@ -111,7 +111,10 @@ class VideoDecoderProcessSpawner:
             self.__first_read = False
             if self.__process:
                 if self.__process.pid:
-                    os.kill(self.__process.pid, 9)
+                    try:
+                        os.kill(self.__process.pid, 9)
+                    except:
+                        pass
             print("Video capturer process stopped")
         return self
 

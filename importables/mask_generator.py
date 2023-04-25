@@ -643,6 +643,9 @@ class MaskGeneratorMocker(MaskGenerator):
         self.__mask_exist: deque[IsHumanDetected] = deque()
         self.__h5py_instance: h5py.File = h5py_instance
 
+    def __len__(self):
+        return len(self.__mask)
+
     def load(self) -> bool:
         """Loads masks and most center bounding box (MCBB) from file to queues"""
         self.flush()

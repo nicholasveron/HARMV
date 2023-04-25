@@ -384,6 +384,9 @@ class OpticalFlowGeneratorMocker(OpticalFlowGenerator):
         self.__overlap_grid_mode: bool = overlap_grid_mode
         self.__overlap_grid_scale: int = overlap_grid_scale
 
+    def __len__(self):
+        return len(self.__optical_flows)
+
     def load(self) -> bool:
         """Loads optical_flows from file to queues"""
         self.flush()
