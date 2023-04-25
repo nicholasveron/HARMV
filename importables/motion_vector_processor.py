@@ -124,6 +124,9 @@ class MotionVectorProcessorMocker(MotionVectorProcessor):
         self.__h5py_instance: h5py.File = h5py_instance
         self.__motion_vectors_type: bool = True
         self.__motion_vectors_hwc: ResolutionHWC = (0, 0, 0)
+    
+    def __len__(self):
+        return len(self.__motion_vectors)
 
     def load(self) -> bool:
         """Loads motion vectors from file to queues"""

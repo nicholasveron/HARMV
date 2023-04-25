@@ -3,15 +3,16 @@ import os
 import h5py
 import numpy
 import pandas
-from typing import Union
 from copy import deepcopy
 from tqdm.auto import tqdm
-from numpy import ndarray
 from .video_decoder import VideoDecoderProcessSpawner
 from .mask_generator import MaskGenerator, MaskGeneratorMocker, MaskWithMostCenterBoundingBoxData
 from .optical_flow_generator import OpticalFlowGenerator, OpticalFlowGeneratorMocker, OpticalFlowFrame
 from .motion_vector_processor import MotionVectorProcessor, MotionVectorProcessorMocker, MotionVectorFrame
 from .custom_types import (
+    Union,
+    Tuple,
+    ndarray,
     DecodedData,
     MotionVectorFrame,
     RawMotionVectors,
@@ -185,14 +186,14 @@ class PreprocessingManagers:
         return current_dictionary
 
     class Pregenerator:
-        """Pregenerate preprocessing to h5 file(s) from a video"""
+        """Pregenerate preprocessing to h5 file(s) from a video. This class is designed to be independent from other preprocessing classes"""
 
         DICTIONARY_FILENAME = "generated_dictionary.csv"
 
-        def __init__(self, target_folder: str, motion_vector_processor_kwargs: dict, mask_generator_kwargs: dict, optical_flow_kwargs: dict, directory_mapping: dict) -> None:
-            self.__motion_vector_processor_kwargs: dict = motion_vector_processor_kwargs
+        def __init__(self, target_folder: str, mask_generator_kwargs: dict, motion_vector_processor_kwargs: dict, optical_flow_generator_kwargs: dict, directory_mapping: dict) -> None:
             self.__mask_generator_kwargs: dict = mask_generator_kwargs
-            self.__optical_flow_kwargs: dict = optical_flow_kwargs
+            self.__motion_vector_processor_kwargs: dict = motion_vector_processor_kwargs
+            self.__optical_flow_generator_kwargs: dict = optical_flow_generator_kwargs
             self.__target_folder: str = target_folder
             os.makedirs(os.path.dirname(target_folder), exist_ok=True)
 
@@ -218,7 +219,7 @@ class PreprocessingManagers:
 
             self.__motion_vector_processor: MotionVectorProcessor = MotionVectorProcessor(**self.__motion_vector_processor_kwargs)
             self.__mask_generator: MaskGenerator = MaskGenerator(**self.__mask_generator_kwargs)
-            self.__optical_flow_generator: OpticalFlowGenerator = OpticalFlowGenerator(**self.__optical_flow_kwargs)
+            self.__optical_flow_generator: OpticalFlowGenerator = OpticalFlowGenerator(**self.__optical_flow_generator_kwargs)
 
             self.__motion_vector_processor.process(raw_motion_vector)
             self.__motion_vector_processor.process(raw_motion_vector)
@@ -243,14 +244,14 @@ class PreprocessingManagers:
                 _, original_filename = os.path.split(video_path)
                 target_name = original_filename.split(".")[0] + ".h5"
 
-            abs_video_path = os.path.abspath(video_path)
-            abs_target_path = os.path.abspath(os.path.join(self.__target_folder, target_name))
-            rel_video_path = os.path.relpath(abs_video_path, abs_target_path)
+            abs_video_path: str = os.path.abspath(video_path)
+            abs_target_path: str = os.path.abspath(os.path.join(self.__target_folder, target_name))
+            rel_video_path: str = os.path.relpath(abs_video_path, abs_target_path)
 
             h5_handle: h5py.File = h5py.File(abs_target_path, mode="w")
-            mock_mve: MotionVectorProcessorMocker = MotionVectorProcessorMocker(h5_handle, **self.__motion_vector_processor_kwargs)
-            mock_maskgen: MaskGeneratorMocker = MaskGeneratorMocker(h5_handle, **self.__mask_generator_kwargs)
-            mock_opflowgen: OpticalFlowGeneratorMocker = OpticalFlowGeneratorMocker(h5_handle, **self.__optical_flow_kwargs)
+            mock_mask_generator: MaskGeneratorMocker = MaskGeneratorMocker(h5_handle, **self.__mask_generator_kwargs)
+            mock_motion_vector_processor: MotionVectorProcessorMocker = MotionVectorProcessorMocker(h5_handle, **self.__motion_vector_processor_kwargs)
+            mock_optical_flow_generator: OpticalFlowGeneratorMocker = OpticalFlowGeneratorMocker(h5_handle, **self.__optical_flow_generator_kwargs)
 
             decoder: VideoDecoderProcessSpawner = VideoDecoderProcessSpawner(path=abs_video_path).start()
             frame_data: DecodedData = decoder.read()
@@ -266,13 +267,13 @@ class PreprocessingManagers:
                         break
 
                     motion_vector_frame: MotionVectorFrame = self.__motion_vector_processor.process(raw_motion_vectors)
-                    mock_mve.append(motion_vector_frame)
+                    mock_motion_vector_processor.append(motion_vector_frame)
 
                     mask_data: MaskWithMostCenterBoundingBoxData = self.__mask_generator.forward_once_with_mcbb(rgb_frame)
-                    mock_maskgen.append(mask_data)
+                    mock_mask_generator.append(mask_data)
 
                     optical_flow_frame: OpticalFlowFrame = self.__optical_flow_generator.forward_once_auto(last_rgb_frame, rgb_frame)
-                    mock_opflowgen.append(optical_flow_frame)
+                    mock_optical_flow_generator.append(optical_flow_frame)
 
                     last_frame_data = frame_data
                     frame_data = decoder.read()
@@ -286,9 +287,62 @@ class PreprocessingManagers:
             for k, v in dictionary_dict.items():
                 h5_handle.attrs[k] = v
 
-            mock_mve.save()
-            mock_maskgen.save()
-            mock_opflowgen.save()
+            mock_mask_generator.save()
+            mock_motion_vector_processor.save()
+            mock_optical_flow_generator.save()
             h5_handle.close()
 
             return self.__dataset_dictionary.append(dictionary_dict) and self.__dataset_dictionary.save()
+
+    class Loader:
+        """Loads preprocessed data (h5 File) with its video and spawns mock classes"""
+
+        def __init__(self, directory_mapping: dict,  mask_generator_kwargs: dict, motion_vector_processor_kwargs: Union[dict, None] = None, optical_flow_kwargs: Union[dict, None] = None) -> None:
+            self.__directory_mapping: dict = directory_mapping
+            self.__mask_generator_kwargs: dict = mask_generator_kwargs
+            self.__motion_vector_processor_kwargs: Union[dict, None] = motion_vector_processor_kwargs
+            self.__optical_flow_kwargs: Union[dict, None] = optical_flow_kwargs
+            self.__previously_loaded: bool = False
+            assert self.__motion_vector_processor_kwargs or self.__optical_flow_kwargs, "Either motion vector arguments or optical flow arguments must be given"
+
+        def load_from_h5(self, file_path: str) -> Tuple[VideoDecoderProcessSpawner, MaskGeneratorMocker, Union[MotionVectorProcessorMocker, None], Union[OpticalFlowGeneratorMocker, None]]:
+
+            self.close()
+
+            abs_file_path = os.path.abspath(file_path)
+            self.__last_h5_handle: h5py.File = h5py.File(abs_file_path)
+
+            assert self.__directory_mapping["/"] in self.__last_h5_handle.attrs
+            rel_video_path: str = str(self.__last_h5_handle.attrs[self.__directory_mapping["/"]])
+            abs_video_path: str = os.path.abspath(os.path.join(abs_file_path, rel_video_path))
+
+            self.__last_video_spawner: VideoDecoderProcessSpawner = VideoDecoderProcessSpawner(abs_video_path).start()
+            self.__last_mask_generator: MaskGeneratorMocker = MaskGeneratorMocker(self.__last_h5_handle, **self.__mask_generator_kwargs)
+
+            assert self.__last_mask_generator.load(), "Mask Generator Mocker Failed to Load"
+
+            self.__last_motion_vector_processor: Union[MotionVectorProcessor, None] = None
+            self.__last_optical_flow_generator: Union[OpticalFlowGenerator, None] = None
+
+            if self.__motion_vector_processor_kwargs:
+                self.__last_motion_vector_processor = MotionVectorProcessorMocker(self.__last_h5_handle, **self.__motion_vector_processor_kwargs)
+                assert self.__last_motion_vector_processor.load(), "Motion Vector Processor Mocker Failed to Load"
+
+            if self.__optical_flow_kwargs:
+                self.__last_optical_flow_generator = OpticalFlowGeneratorMocker(self.__last_h5_handle, **self.__optical_flow_kwargs)
+                assert self.__last_optical_flow_generator.load(), "Optical Flow Generator Failed to Load"
+
+            return self.__last_video_spawner, self.__last_mask_generator, self.__last_motion_vector_processor, self.__last_optical_flow_generator
+
+        def close(self) -> None:
+            """Properly close previous loaded preprocessed data"""
+
+            if self.__previously_loaded:
+                del self.__last_mask_generator
+                del self.__last_motion_vector_processor
+                del self.__last_optical_flow_generator
+                self.__last_video_spawner.stop()
+                self.__last_h5_handle.close()
+
+        def __del__(self) -> None:
+            self.close()
