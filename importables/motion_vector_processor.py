@@ -6,6 +6,7 @@ import numpy
 from collections import deque
 from .utilities import Utilities
 from .custom_types import (
+    Union,
     ResolutionHW,
     ResolutionHWC,
     RawMotionVectors,
@@ -110,7 +111,7 @@ class MotionVectorProcessorMocker(MotionVectorProcessor):
     MOTION_VECTORS_COUNT_ATTR = "motion_vectors_count"
 
     def __init__(self,
-                 h5py_instance: h5py.File,
+                 h5py_instance: Union[h5py.File, h5py.Group],
                  bound: int = 32,
                  raw_motion_vectors: bool = False,
                  *args,
@@ -121,22 +122,27 @@ class MotionVectorProcessorMocker(MotionVectorProcessor):
         self.__inverse_rgb_2x_bound: float = 255 / (self.__bound * 2)
         self.__half_rgb: int = 128
         self.__raw_motion_vectors: bool = raw_motion_vectors
-        self.__h5py_instance: h5py.File = h5py_instance
+        self.__h5py_instance: Union[h5py.File, h5py.Group] = h5py_instance
         self.__motion_vectors_type: bool = True
         self.__motion_vectors_hwc: ResolutionHWC = (0, 0, 0)
-    
+
     def __len__(self):
         return len(self.__motion_vectors)
 
-    def load(self) -> bool:
+    def load(self, start_index: int = -1, stop_index: int = -1) -> bool:
         """Loads motion vectors from file to queues"""
         self.flush()
 
         if not self.MOTION_VECTORS_PATH in self.__h5py_instance:
             return False
 
-        for motion_vectors in self.__h5py_instance[self.MOTION_VECTORS_PATH][()]:  # type: ignore
-            self.__motion_vectors.append(motion_vectors)
+        if start_index < 0:
+            start_index = 0
+
+        if stop_index < 0:
+            stop_index = len(self.__h5py_instance[self.MOTION_VECTORS_PATH])  # type: ignore
+
+        self.__motion_vectors = deque(self.__h5py_instance[self.MOTION_VECTORS_PATH][start_index:stop_index])  # type: ignore
 
         self.__motion_vectors_type = bool(self.__h5py_instance.attrs[self.MOTION_VECTORS_ARE_RAW_ATTR])
         self.__motion_vectors_hwc = tuple(self.__h5py_instance.attrs[self.MOTION_VECTORS_HWC_ATTR])  # type: ignore
@@ -177,6 +183,25 @@ class MotionVectorProcessorMocker(MotionVectorProcessor):
                 motion_vectors = numpy.ones(self.__motion_vectors_hwc, dtype=numpy.uint8) * 128
         else:
             motion_vectors: MotionVectorFrame = self.__motion_vectors.popleft()
+
+        if not self.__raw_motion_vectors and self.__motion_vectors_type:
+            motion_vectors = Utilities.bound_motion_frame(
+                motion_vectors,
+                self.__half_rgb,
+                self.__inverse_rgb_2x_bound
+            )
+
+        return motion_vectors
+
+    def generate_blank(self, size: Union[ResolutionHWC, None] = None) -> MotionVectorFrame:
+        
+        if not size:
+            size = self.__motion_vectors_hwc
+
+        if self.__motion_vectors_type:
+            motion_vectors = numpy.zeros(size, dtype=numpy.int16)
+        else:
+            motion_vectors = numpy.ones(size, dtype=numpy.uint8) * 128
 
         if not self.__raw_motion_vectors and self.__motion_vectors_type:
             motion_vectors = Utilities.bound_motion_frame(

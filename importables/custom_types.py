@@ -1,6 +1,7 @@
 """Custom types declared here"""
 from numpy import ndarray
 from typing import Tuple, Union, Any, List
+from torch import Tensor
 
 # decoder
 IsDecoderFrameAvailable = bool
@@ -43,3 +44,6 @@ ImageType = Union[FrameRGB, FrameOfMotionDataType, SegmentationMask]
 ResolutionHW = Union[Tuple[int, int], ndarray]
 ResolutionHWC = Union[Tuple[int, int, int], ndarray]
 ColorRGB = Union[Tuple[int, int, int], ndarray]
+ColorRGBXY = Union[Tuple[int, int, int, int, int], ndarray]
+ColorXY = Union[Tuple[int, int], ndarray]
+ColorInput = Union[ColorRGB, ColorXY, ColorRGBXY]

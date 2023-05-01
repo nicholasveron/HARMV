@@ -17,6 +17,7 @@ from .utilities import Utilities
 from .custom_types import (
     List,
     Tuple,
+    Union,
     FrameRGB,
     ResolutionHW,
     ResolutionHWC,
@@ -365,7 +366,7 @@ class OpticalFlowGeneratorMocker(OpticalFlowGenerator):
 
     def __init__(
             self,
-            h5py_instance: h5py.File,
+            h5py_instance: Union[h5py.File, h5py.Group],
             bound: int = 32,
             raw_optical_flows: bool = False,
             overlap_grid_mode: bool = False,
@@ -378,7 +379,7 @@ class OpticalFlowGeneratorMocker(OpticalFlowGenerator):
         self.__inverse_rgb_2x_bound: float = 255 / (self.__bound * 2)
         self.__half_rgb: int = 128
         self.__raw_optical_flows: bool = raw_optical_flows
-        self.__h5py_instance: h5py.File = h5py_instance
+        self.__h5py_instance: Union[h5py.File, h5py.Group] = h5py_instance
         self.__optical_flows_type = True
         self.__optical_flows_hwc: ResolutionHWC = (0, 0, 0)
         self.__overlap_grid_mode: bool = overlap_grid_mode
@@ -387,15 +388,20 @@ class OpticalFlowGeneratorMocker(OpticalFlowGenerator):
     def __len__(self):
         return len(self.__optical_flows)
 
-    def load(self) -> bool:
+    def load(self, start_index: int = -1, stop_index: int = -1) -> bool:
         """Loads optical_flows from file to queues"""
         self.flush()
 
         if not self.OPTICAL_FLOWS_PATH in self.__h5py_instance:
             return False
 
-        for optical_flows in self.__h5py_instance[self.OPTICAL_FLOWS_PATH][()]:  # type: ignore
-            self.__optical_flows.append(optical_flows)
+        if start_index < 0:
+            start_index = 0
+
+        if stop_index < 0:
+            stop_index = len(self.__h5py_instance[self.OPTICAL_FLOWS_PATH])  # type: ignore
+
+        self.__optical_flows = deque(self.__h5py_instance[self.OPTICAL_FLOWS_PATH][start_index:stop_index])  # type: ignore
 
         self.__optical_flows_type = bool(self.__h5py_instance.attrs[self.OPTICAL_FLOWS_ARE_RAW_ATTR])
         self.__optical_flows_hwc = tuple(self.__h5py_instance.attrs[self.OPTICAL_FLOWS_HWC_ATTR])
@@ -461,6 +467,25 @@ class OpticalFlowGeneratorMocker(OpticalFlowGenerator):
     def forward_once_auto(self, *args, **kwargs) -> OpticalFlowFrame:
         """Pops optical flows from queue simulates OpticalFlowGenerator's forward_once_auto"""
         return self.forward_once()
+
+    def generate_blank(self, size: Union[ResolutionHWC, None] = None) -> OpticalFlowFrame:
+        
+        if not size:
+            size = self.__optical_flows_hwc
+
+        if self.__optical_flows_type:
+            optical_flows = numpy.zeros(size, dtype=numpy.int16)
+        else:
+            optical_flows = numpy.ones(size, dtype=numpy.uint8) * 128
+
+        if not self.__raw_optical_flows and self.__optical_flows_type:
+            optical_flows = Utilities.bound_motion_frame(
+                optical_flows,
+                self.__half_rgb,
+                self.__inverse_rgb_2x_bound
+            )
+
+        return optical_flows
 
     def flush(self) -> None:
         """Clear all queues"""

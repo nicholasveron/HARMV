@@ -1,7 +1,8 @@
 """Module for preprocessing managers such as generator, viewer, loader, etc"""
 import os
+import cv2
+import tables
 import h5py
-import numpy
 import pandas
 from copy import deepcopy
 from tqdm.auto import tqdm
@@ -31,7 +32,8 @@ class DatasetDictionary:
             "R": "ReplicationID",
             "S": "SetupID",
             "/": "SourceFilePath",
-            ".": "GeneratedFileName"
+            ".": "GeneratedFileName",
+            "#": "FrameCount",
         }
 
         def __new__(cls):
@@ -40,6 +42,7 @@ class DatasetDictionary:
     UNKNOWN_KEY = "_"
     GENERATED_FILENAME_KEY = "."
     SOURCE_FILEPATH_KEY = "/"
+    FRAME_COUNT_KEY = "#"
 
     def __init__(self, dictionary_path: str, dataset_mapping: dict) -> None:
         self.__dictionary_path: str = dictionary_path
@@ -65,7 +68,7 @@ class DatasetDictionary:
             return False
         return True
 
-    def parse(self, dataset_filename: str, source_filepath: str) -> dict:
+    def parse(self, dataset_filename: str, source_filepath: str, frame_count: int = -1) -> dict:
         filtered: dict = {}
         current_parsing: str = self.UNKNOWN_KEY
         current_column: str = self.UNKNOWN_KEY
@@ -96,6 +99,12 @@ class DatasetDictionary:
         filtered[self.__dataset_mapping[self.SOURCE_FILEPATH_KEY]] = source_filepath
         filtered[self.__dataset_mapping[self.GENERATED_FILENAME_KEY]] = dataset_filename
 
+        if frame_count == -1:
+            video_capturer: cv2.VideoCapture = cv2.VideoCapture()
+            video_capturer.open(source_filepath)
+            frame_count = int(video_capturer.get(cv2.CAP_PROP_FRAME_COUNT))
+        filtered[self.__dataset_mapping[self.FRAME_COUNT_KEY]] = frame_count
+
         return filtered
 
     def append(self, dataset_dict: dict) -> bool:
@@ -108,8 +117,8 @@ class DatasetDictionary:
             return False
         return True
 
-    def parse_and_append(self, dataset_filename: str, source_filepath: str) -> bool:
-        dataset_dict: dict = self.parse(dataset_filename, source_filepath)
+    def parse_and_append(self, dataset_filename: str, source_filepath: str, frame_count: int = -1) -> bool:
+        dataset_dict: dict = self.parse(dataset_filename, source_filepath, frame_count)
         return self.append(
             dataset_dict
         )
@@ -185,6 +194,30 @@ class PreprocessingManagers:
 
         return current_dictionary
 
+    @staticmethod
+    def consolidate_pregenerated_preprocessing_files(root_folder: str, dataset_mapping: dict) -> None:
+        abs_root_folder: str = os.path.abspath(root_folder)
+        dataset_dictionary_filename: str = os.path.join(abs_root_folder, "generated_dictionary.csv")
+        dataset_dictionary_pd: pandas.DataFrame = DatasetDictionary(dataset_dictionary_filename, dataset_mapping).as_DataFrame()
+
+        h5py_base_filename: str = os.path.join(abs_root_folder, "generated_consolidation.h5")
+        h5py_base_file: h5py.File = h5py.File(h5py_base_filename, "w", rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7)
+
+        for index in tqdm(range(len(dataset_dictionary_pd)), desc="Consolidating pregenerated files..."):
+            current_series: pandas.Series = dataset_dictionary_pd.iloc[index]
+            generated_filename: str = current_series[dataset_mapping[DatasetDictionary.GENERATED_FILENAME_KEY]]  # type: ignore
+            h5py_current_filename: str = os.path.join(abs_root_folder, generated_filename)
+            current_h5py_file: h5py.File = h5py.File(h5py_current_filename, rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7)
+            current_group: h5py.Group = h5py_base_file.create_group(generated_filename)
+            for key, value in current_h5py_file.attrs.items():
+                current_group.attrs[key] = value
+            for dataset_name, value in current_h5py_file.items():
+                if isinstance(value, h5py.Dataset):
+                    data: ndarray = value[()]
+                    current_group.create_dataset(name=dataset_name, data=data, chunks=data.shape, compression=32001, compression_opts=(0, 0, 0, 0, 9, 1, 1), shuffle=False)  # blosc compression
+
+        h5py_base_file.close()
+
     class Pregenerator:
         """Pregenerate preprocessing to h5 file(s) from a video. This class is designed to be independent from other preprocessing classes"""
 
@@ -248,10 +281,10 @@ class PreprocessingManagers:
             abs_target_path: str = os.path.abspath(os.path.join(self.__target_folder, target_name))
             rel_video_path: str = os.path.relpath(abs_video_path, abs_target_path)
 
-            h5_handle: h5py.File = h5py.File(abs_target_path, mode="w")
-            mock_mask_generator: MaskGeneratorMocker = MaskGeneratorMocker(h5_handle, **self.__mask_generator_kwargs)
-            mock_motion_vector_processor: MotionVectorProcessorMocker = MotionVectorProcessorMocker(h5_handle, **self.__motion_vector_processor_kwargs)
-            mock_optical_flow_generator: OpticalFlowGeneratorMocker = OpticalFlowGeneratorMocker(h5_handle, **self.__optical_flow_generator_kwargs)
+            h5py_instance: h5py.File = h5py.File(abs_target_path, mode="w", rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7)
+            mock_mask_generator: MaskGeneratorMocker = MaskGeneratorMocker(h5py_instance, **self.__mask_generator_kwargs)
+            mock_motion_vector_processor: MotionVectorProcessorMocker = MotionVectorProcessorMocker(h5py_instance, **self.__motion_vector_processor_kwargs)
+            mock_optical_flow_generator: OpticalFlowGeneratorMocker = OpticalFlowGeneratorMocker(h5py_instance, **self.__optical_flow_generator_kwargs)
 
             decoder: VideoDecoderProcessSpawner = VideoDecoderProcessSpawner(path=abs_video_path).start()
             frame_data: DecodedData = decoder.read()
@@ -283,54 +316,60 @@ class PreprocessingManagers:
             decoder.stop()
             del decoder
 
-            dictionary_dict: dict = self.__dataset_dictionary.parse(target_name, rel_video_path)
+            dictionary_dict: dict = self.__dataset_dictionary.parse(target_name, rel_video_path, len(mock_mask_generator))
             for k, v in dictionary_dict.items():
-                h5_handle.attrs[k] = v
+                h5py_instance.attrs[k] = v
 
             mock_mask_generator.save()
             mock_motion_vector_processor.save()
             mock_optical_flow_generator.save()
-            h5_handle.close()
+            h5py_instance.file.close()
 
             return self.__dataset_dictionary.append(dictionary_dict) and self.__dataset_dictionary.save()
 
     class Loader:
         """Loads preprocessed data (h5 File) with its video and spawns mock classes"""
 
-        def __init__(self, directory_mapping: dict,  mask_generator_kwargs: dict, motion_vector_processor_kwargs: Union[dict, None] = None, optical_flow_kwargs: Union[dict, None] = None) -> None:
-            self.__directory_mapping: dict = directory_mapping
+        def __init__(self, dataset_mapping: dict,  mask_generator_kwargs: dict, motion_vector_processor_kwargs: Union[dict, None] = None, optical_flow_kwargs: Union[dict, None] = None, load_rgb_video: bool = False) -> None:
+            self.__dataset_mapping: dict = dataset_mapping
             self.__mask_generator_kwargs: dict = mask_generator_kwargs
             self.__motion_vector_processor_kwargs: Union[dict, None] = motion_vector_processor_kwargs
             self.__optical_flow_kwargs: Union[dict, None] = optical_flow_kwargs
+            self.__load_rgb_video: bool = load_rgb_video
             self.__previously_loaded: bool = False
             assert self.__motion_vector_processor_kwargs or self.__optical_flow_kwargs, "Either motion vector arguments or optical flow arguments must be given"
 
-        def load_from_h5(self, file_path: str) -> Tuple[VideoDecoderProcessSpawner, MaskGeneratorMocker, Union[MotionVectorProcessorMocker, None], Union[OpticalFlowGeneratorMocker, None]]:
+        def load_from_h5(self, h5py_instance: Union[h5py.File, h5py.Group], start_index: int = -1, stop_index: int = -1) -> Tuple[Union[VideoDecoderProcessSpawner, None], MaskGeneratorMocker, Union[MotionVectorProcessorMocker, None], Union[OpticalFlowGeneratorMocker, None]]:
 
             self.close()
 
-            abs_file_path = os.path.abspath(file_path)
-            self.__last_h5_handle: h5py.File = h5py.File(abs_file_path)
+            self.__last_h5py_instance: Union[h5py.File, h5py.Group] = h5py_instance
+            abs_file_path: str = self.__last_h5py_instance.file.filename
 
-            assert self.__directory_mapping["/"] in self.__last_h5_handle.attrs
-            rel_video_path: str = str(self.__last_h5_handle.attrs[self.__directory_mapping["/"]])
+            assert self.__dataset_mapping["/"] in self.__last_h5py_instance.attrs
+            rel_video_path: str = str(self.__last_h5py_instance.attrs[self.__dataset_mapping["/"]])
             abs_video_path: str = os.path.abspath(os.path.join(abs_file_path, rel_video_path))
 
-            self.__last_video_spawner: VideoDecoderProcessSpawner = VideoDecoderProcessSpawner(abs_video_path).start()
-            self.__last_mask_generator: MaskGeneratorMocker = MaskGeneratorMocker(self.__last_h5_handle, **self.__mask_generator_kwargs)
+            self.__last_video_spawner: Union[VideoDecoderProcessSpawner, None] = None
+            if self.__load_rgb_video:
+                if start_index < 0 and stop_index < 0:
+                    self.__last_video_spawner = VideoDecoderProcessSpawner(abs_video_path).start()
+                else:
+                    print("Loader currently doesn't support rgb video partial load, skipping rgb video")
 
-            assert self.__last_mask_generator.load(), "Mask Generator Mocker Failed to Load"
+            self.__last_mask_generator: MaskGeneratorMocker = MaskGeneratorMocker(self.__last_h5py_instance, **self.__mask_generator_kwargs)
+            assert self.__last_mask_generator.load(start_index, stop_index), "Mask Generator Mocker Failed to Load"
 
             self.__last_motion_vector_processor: Union[MotionVectorProcessor, None] = None
             self.__last_optical_flow_generator: Union[OpticalFlowGenerator, None] = None
 
             if self.__motion_vector_processor_kwargs:
-                self.__last_motion_vector_processor = MotionVectorProcessorMocker(self.__last_h5_handle, **self.__motion_vector_processor_kwargs)
-                assert self.__last_motion_vector_processor.load(), "Motion Vector Processor Mocker Failed to Load"
+                self.__last_motion_vector_processor = MotionVectorProcessorMocker(self.__last_h5py_instance, **self.__motion_vector_processor_kwargs)
+                assert self.__last_motion_vector_processor.load(start_index, stop_index), "Motion Vector Processor Mocker Failed to Load"
 
             if self.__optical_flow_kwargs:
-                self.__last_optical_flow_generator = OpticalFlowGeneratorMocker(self.__last_h5_handle, **self.__optical_flow_kwargs)
-                assert self.__last_optical_flow_generator.load(), "Optical Flow Generator Failed to Load"
+                self.__last_optical_flow_generator = OpticalFlowGeneratorMocker(self.__last_h5py_instance, **self.__optical_flow_kwargs)
+                assert self.__last_optical_flow_generator.load(start_index, stop_index), "Optical Flow Generator Failed to Load"
 
             return self.__last_video_spawner, self.__last_mask_generator, self.__last_motion_vector_processor, self.__last_optical_flow_generator
 
@@ -338,11 +377,14 @@ class PreprocessingManagers:
             """Properly close previous loaded preprocessed data"""
 
             if self.__previously_loaded:
+                del self.__last_video_spawner
                 del self.__last_mask_generator
                 del self.__last_motion_vector_processor
                 del self.__last_optical_flow_generator
-                self.__last_video_spawner.stop()
-                self.__last_h5_handle.close()
+
+                # only close h5py file
+                if isinstance(self.__last_h5py_instance, h5py.File):
+                    self.__last_h5py_instance.close()
 
         def __del__(self) -> None:
             self.close()
