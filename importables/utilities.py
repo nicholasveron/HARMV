@@ -4,9 +4,8 @@ import numpy
 from numpy import ndarray
 from .custom_types import (
     Tuple,
-    ColorRGB,
-    FrameRGB,
     ImageType,
+    ColorInput,
     ResolutionHW,
     BoundingBoxXY1XY2,
     FrameOfMotionDataType,
@@ -168,13 +167,22 @@ class Utilities:
         return bounding_box.astype(numpy.int64)
 
     @staticmethod
+    def crop_to_bb(
+        image: ImageType,
+        bounding_box: BoundingBoxXY1XY2
+    ) -> ImageType:
+        """Crops image using bounding box"""
+
+        return image[int(bounding_box[1]):int(bounding_box[3]), int(bounding_box[0]):int(bounding_box[2])].copy()
+
+    @staticmethod
     def crop_to_bb_and_resize(
-        image: FrameRGB,
+        image: ImageType,
         bounding_box: BoundingBoxXY1XY2,
         original_size: ResolutionHW,
         target_size: ResolutionHW = (-1, -1),
         aggressive: bool = True
-    ) -> FrameRGB:
+    ) -> ImageType:
         """Crops image using bounding box, and resizes the image back to original size (h,w) or target size (h,w)"""
 
         image_size: Tuple[int, int] = image.shape[:2]
@@ -189,7 +197,7 @@ class Utilities:
         if image_size != original_size:
             bounding_box = Utilities.bounding_box_resize(bounding_box.astype(numpy.float64), original_size, image_size).astype(numpy.int16)
 
-        cropped_image: ndarray = image[int(bounding_box[1]):int(bounding_box[3]), int(bounding_box[0]):int(bounding_box[2])].copy()
+        cropped_image: ImageType = Utilities.crop_to_bb(image, bounding_box)
         bounding_box_w: int = bounding_box[2] - bounding_box[0]
         bounding_box_h: int = bounding_box[3] - bounding_box[1]
         bounding_box_size: ndarray = numpy.array([bounding_box_h, bounding_box_w])
@@ -199,7 +207,6 @@ class Utilities:
         return cropped_image
 
     @staticmethod
-    @numba.njit(fastmath=True)
     def __letterbox_core(
         shape: ResolutionHW,
         target_size: int,
@@ -227,7 +234,7 @@ class Utilities:
     def letterbox(
             image: ImageType,
             target_size: int = 320,
-            color: ColorRGB = (114, 114, 114),
+            color: ColorInput = (114, 114, 114),
             stride: int = 32,
             box: bool = False
     ) -> tuple[ImageType, ResolutionHW, int, int, int, int]:

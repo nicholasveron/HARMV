@@ -1,6 +1,5 @@
 # pyright: reportPrivateImportUsage=false
 """Mask Generator generates peoples mask using YOLOv7 - Mask from bgr frames"""
-
 import os
 import h5py
 import yaml
@@ -637,28 +636,31 @@ class MaskGeneratorMocker(MaskGenerator):
     MASK_HWC_ATTR = "mask_hwc"
     MASK_COUNT_ATTR = "mask_count"
 
-    def __init__(self, h5py_instance: h5py.File, *args, **kwargs) -> None:
+    def __init__(self, h5py_instance: Union[h5py.File, h5py.Group], *args, **kwargs) -> None:
         self.__mask: deque[SegmentationMask] = deque()
         self.__mask_mcbb: deque[BoundingBoxXY1XY2] = deque()
         self.__mask_exist: deque[IsHumanDetected] = deque()
-        self.__h5py_instance: h5py.File = h5py_instance
+        self.__h5py_instance: Union[h5py.File, h5py.Group] = h5py_instance
 
     def __len__(self):
         return len(self.__mask)
 
-    def load(self) -> bool:
+    def load(self, start_index: int = -1, stop_index: int = -1) -> bool:
         """Loads masks and most center bounding box (MCBB) from file to queues"""
         self.flush()
 
         if not all([x in self.__h5py_instance for x in [self.MASK_PATH, self.MASK_MCBB_PATH, self.MASK_EXIST_PATH]]):
             return False
 
-        for mask in self.__h5py_instance[self.MASK_PATH][()]:  # type: ignore
-            self.__mask.append(mask)
-        for mask_mcbb in self.__h5py_instance[self.MASK_MCBB_PATH][()]:  # type: ignore
-            self.__mask_mcbb.append(mask_mcbb)
-        for mask_exist in self.__h5py_instance[self.MASK_EXIST_PATH][()]:  # type: ignore
-            self.__mask_exist.append(mask_exist)
+        if start_index < 0:
+            start_index = 0
+
+        if stop_index < 0:
+            stop_index = len(self.__h5py_instance[self.MASK_PATH])  # type: ignore
+
+        self.__mask = deque(self.__h5py_instance[self.MASK_PATH][start_index:stop_index])  # type: ignore
+        self.__mask_mcbb = deque(self.__h5py_instance[self.MASK_MCBB_PATH][start_index:stop_index])  # type: ignore
+        self.__mask_exist = deque(self.__h5py_instance[self.MASK_EXIST_PATH][start_index:stop_index])  # type: ignore
 
         if len(self.__mask) != len(self.__mask_mcbb) != len(self.__mask_exist):
             self.flush()

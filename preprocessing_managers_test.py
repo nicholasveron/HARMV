@@ -1,5 +1,6 @@
 from importables.preprocessing_managers import PreprocessingManagers, DatasetDictionary
 import cv2
+import h5py
 import numpy
 from importables.custom_types import DecodedData, FrameRGB, RawMotionVectors, BoundingBoxXY1XY2, SegmentationMask, MotionVectorFrame, MaskWithMostCenterBoundingBoxData, OpticalFlowFrame
 from copy import deepcopy
@@ -47,7 +48,10 @@ target_size = 416
 
 # PreprocessingManagers.generate_dataset_dictionary_recursively("/mnt/c/Skripsi/dataset-h264", DatasetDictionary.Mappings.NTU_ACTION_RECOGNITION_DATASET)
 
+# PreprocessingManagers.consolidate_pregenerated_preprocessing_files("/mnt/c/Skripsi/dataset-pregen", DatasetDictionary.Mappings.NTU_ACTION_RECOGNITION_DATASET)
+
 h5_example_path = "/mnt/c/Skripsi/dataset-pregen/S013C001P019R002A016_rgb.h5"
+h5py_handle = h5py.File(h5_example_path, rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7)
 
 args_mvprocessor = {
     "raw_motion_vectors": False,
@@ -73,10 +77,13 @@ args_ofgenerator = {
     "overlap_grid_scale": 2
 }
 
-pmld = PreprocessingManagers.Loader(DatasetDictionary.Mappings.NTU_ACTION_RECOGNITION_DATASET, args_maskgenerator, args_mvprocessor, args_ofgenerator)
+pmld = PreprocessingManagers.Loader(DatasetDictionary.Mappings.NTU_ACTION_RECOGNITION_DATASET, args_maskgenerator, args_mvprocessor, args_ofgenerator, True)
 
-v, ma, mv, op = pmld.load_from_h5(h5_example_path)
-assert mv is not None and op is not None
+# v, ma, mv, op = pmld.load_from_h5(h5_example_path,10,20)
+# print(len(ma), len(mv), len(op))
+
+v, ma, mv, op = pmld.load_from_h5(h5py_handle)
+assert v is not None and mv is not None and op is not None
 frame_data: DecodedData = v.read()
 last_frame_data: DecodedData = deepcopy(frame_data)
 
