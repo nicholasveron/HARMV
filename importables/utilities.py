@@ -1,9 +1,9 @@
 import cv2
 import numba
 import numpy
-from numpy import ndarray
 from .custom_types import (
     Tuple,
+    ndarray,
     ImageType,
     ColorInput,
     ResolutionHW,

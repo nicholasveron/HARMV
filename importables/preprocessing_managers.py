@@ -14,10 +14,10 @@ from .custom_types import (
     Union,
     Tuple,
     ndarray,
+    FrameRGB,
     DecodedData,
     MotionVectorFrame,
-    RawMotionVectors,
-    FrameRGB
+    RawMotionVectors
 )
 
 

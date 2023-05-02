@@ -9,16 +9,15 @@ import nebullvm
 import speedster
 import traceback
 import torchvision
-from torch import Tensor
-from numpy import ndarray
 from collections import deque
+from .utilities import Utilities
 from detectron2.structures import Boxes
 from detectron2.modeling.poolers import ROIPooler
 from detectron2.layers import paste_masks_in_image
-from .utilities import Utilities
 from .custom_types import (
     Tuple,
     Union,
+    Tensor,
     ColorRGB,
     FrameRGB,
     MaskOnlyData,

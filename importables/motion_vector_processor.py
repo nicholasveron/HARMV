@@ -194,7 +194,7 @@ class MotionVectorProcessorMocker(MotionVectorProcessor):
         return motion_vectors
 
     def generate_blank(self, size: Union[ResolutionHWC, None] = None) -> MotionVectorFrame:
-        
+
         if not size:
             size = self.__motion_vectors_hwc
 
