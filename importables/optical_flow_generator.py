@@ -8,16 +8,15 @@ import numba
 import numpy
 import torch
 import ptlflow
-from torch import Tensor
-from numpy import ndarray
 from collections import deque
-from ptlflow.utils.io_adapter import IOAdapter
-from .motion_vector_processor import MotionVectorProcessor
 from .utilities import Utilities
+from ptlflow.utils.io_adapter import IOAdapter
 from .custom_types import (
     List,
     Tuple,
     Union,
+    Tensor,
+    ndarray,
     FrameRGB,
     ResolutionHW,
     ResolutionHWC,
@@ -469,7 +468,7 @@ class OpticalFlowGeneratorMocker(OpticalFlowGenerator):
         return self.forward_once()
 
     def generate_blank(self, size: Union[ResolutionHWC, None] = None) -> OpticalFlowFrame:
-        
+
         if not size:
             size = self.__optical_flows_hwc
 

@@ -6,11 +6,11 @@ import queue
 from mvextractor.videocap import VideoCap  # pylint: disable=no-name-in-module
 from multiprocessing import Queue, Process
 from .custom_types import (
-    DecodedData, 
-    FrameRGB, 
+    DecodedData,
+    FrameRGB,
     FrameType,
-    IsDecoderFrameAvailable, 
-    RawMotionVectors, 
+    IsDecoderFrameAvailable,
+    RawMotionVectors,
     Any
 )
 
