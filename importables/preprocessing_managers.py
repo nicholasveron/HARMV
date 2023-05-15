@@ -1,28 +1,72 @@
 """Module for preprocessing managers such as generator, viewer, loader, etc"""
 import os
 import cv2
-import tables
 import h5py
 import pandas
+import hdf5plugin
 from copy import deepcopy
 from tqdm.auto import tqdm
 from .video_decoder import VideoDecoderProcessSpawner
-from .mask_generator import MaskGenerator, MaskGeneratorMocker, MaskWithMostCenterBoundingBoxData
-from .optical_flow_generator import OpticalFlowGenerator, OpticalFlowGeneratorMocker, OpticalFlowFrame
-from .motion_vector_processor import MotionVectorProcessor, MotionVectorProcessorMocker, MotionVectorFrame
+from .mask_generator import MaskGenerator, MaskGeneratorMocker
+from .optical_flow_generator import OpticalFlowGenerator, OpticalFlowGeneratorMocker
+from .motion_vector_processor import MotionVectorProcessor, MotionVectorProcessorMocker
 from .custom_types import (
+    List,
     Union,
     Tuple,
     ndarray,
     FrameRGB,
     DecodedData,
     MotionVectorFrame,
-    RawMotionVectors
+    OpticalFlowFrame,
+    RawMotionVectors,
+    MaskWithMostCenterBoundingBoxData,
+    NameAdapterInterface,
 )
-
+from .constants import UCF101_DATASET_MAP
 
 class DatasetDictionary:
     """Pandas wrapper that manages dataset dictionary"""
+
+    class NameAdapters:
+
+        def __new__(cls):
+            raise TypeError('DatasetDictionary.NameAdapters is a constant class and cannot be instantiated')
+
+        class NTU_ACTION_RECOGNITION_DATASET(NameAdapterInterface):
+            """Naming adapter for NTU ACTION RECOGNITION DATASET"""
+            pass
+
+        class UCF_101_ACTION_RECOGNITION_DATASET(NameAdapterInterface):
+            """Naming adapter for UCF101 ACTION RECOGNITION DATASET"""
+
+            def __init__(self) -> None:
+                self.__keys: List = list(UCF101_DATASET_MAP.keys())
+                self.__values: List = list(map(lambda x: x.lower(), list(UCF101_DATASET_MAP.values())))
+                self.__dataset_mapping: dict = DatasetDictionary.Mappings.UCF101_ACTION_RECOGNITION_DATASET
+
+            def transform(self, original_name: str) -> str:
+                split_strings: List = original_name.split("_")
+                action_string: str = split_strings[1]
+                group_number: int = int(split_strings[2][1:])
+                clip_number: int = int(split_strings[3][1:])
+                action_index: int = self.__values.index(action_string.lower())
+                action_number: int = self.__keys[action_index]
+
+                return f"A{str(action_number).rjust(3,'0')}" \
+                    + f"C{str(clip_number).rjust(3,'0')}" \
+                    + f"G{str(group_number).rjust(3,'0')}"
+
+            def inverse_transform(self, original_name: str) -> str:
+                first_split: str = original_name.split(self.__dataset_mapping["ActionID"])[1]
+                action_number: int = int(first_split[:3])
+                action_string: str = UCF101_DATASET_MAP[action_number]
+                second_split: str = first_split.split(self.__dataset_mapping["GroupID"])[1]
+                clip_number: int = int(second_split[:3])
+                third_split: str = second_split.split(self.__dataset_mapping["ClipID"])[1]
+                group_number: int = int(third_split[:3])
+
+                return f"v_{action_string}_g{str(group_number).rjust(2,'0')}_c{str(clip_number).rjust(2,'0')}"
 
     class Mappings:
         NTU_ACTION_RECOGNITION_DATASET = {
@@ -31,6 +75,15 @@ class DatasetDictionary:
             "P": "PerformerID",
             "R": "ReplicationID",
             "S": "SetupID",
+            "/": "SourceFilePath",
+            ".": "GeneratedFileName",
+            "#": "FrameCount",
+        }
+
+        UCF101_ACTION_RECOGNITION_DATASET = {
+            "A": "ActionID",
+            "C": "ClipID",
+            "G": "GroupID",
             "/": "SourceFilePath",
             ".": "GeneratedFileName",
             "#": "FrameCount",
@@ -152,7 +205,6 @@ class DatasetDictionary:
         except:
             pass
 
-
 class PreprocessingManagers:
     """Preprocessing managers parent class"""
 
@@ -160,7 +212,12 @@ class PreprocessingManagers:
         raise TypeError('PreprocessingManagers is a static base class and cannot be instantiated')
 
     @staticmethod
-    def generate_dataset_dictionary_recursively(current_path: str, dataset_mapping: dict, current_dictionary: Union[DatasetDictionary, None] = None):
+    def generate_dataset_dictionary_recursively(
+        current_path: str,
+        dataset_mapping: dict,
+        dataset_name_adapter: NameAdapterInterface,
+        current_dictionary: Union[DatasetDictionary, None] = None
+    ):
         current_path = os.path.abspath(current_path)
         if current_dictionary == None:
             assert os.path.isdir(current_path), "Path is not exist or a directory"
@@ -169,6 +226,7 @@ class PreprocessingManagers:
             return PreprocessingManagers.generate_dataset_dictionary_recursively(
                 current_path,
                 dataset_mapping,
+                dataset_name_adapter,
                 DatasetDictionary(
                     os.path.abspath(
                         os.path.join(current_path, target_name)
@@ -178,45 +236,67 @@ class PreprocessingManagers:
             )
 
         if os.path.isdir(current_path):
-            for path in tqdm(os.listdir(current_path)):
+            for path in tqdm(os.listdir(current_path), current_path.split("/")[-1]):
                 path = os.path.join(current_path, path)
                 current_dictionary = PreprocessingManagers.generate_dataset_dictionary_recursively(
                     path,
                     dataset_mapping,
+                    dataset_name_adapter,
                     current_dictionary
                 )
 
         if os.path.isfile(current_path):
             _, current_filename = os.path.split(current_path)
-            target_name = current_filename.split(".")[0] + ".h5"
             if current_dictionary != None and current_filename.split(".")[-1] != "csv":
+                target_name: str = dataset_name_adapter(current_filename.split(".")[0])
+                target_name: str = target_name + ".h5"
                 current_dictionary.parse_and_append(target_name, current_path)
 
         return current_dictionary
 
     @staticmethod
-    def consolidate_pregenerated_preprocessing_files(root_folder: str, dataset_mapping: dict) -> None:
+    def consolidate_pregenerated_preprocessing_files(
+        root_folder: str, 
+        dataset_mapping: dict, 
+        tag: str="", 
+        select_indices: Union[None, List[int]] = None, 
+        compress_filter: int=hdf5plugin.Blosc2.NOFILTER,
+        compress_level: int = 1
+        ) -> None:
         abs_root_folder: str = os.path.abspath(root_folder)
         dataset_dictionary_filename: str = os.path.join(abs_root_folder, "generated_dictionary.csv")
         dataset_dictionary_pd: pandas.DataFrame = DatasetDictionary(dataset_dictionary_filename, dataset_mapping).as_DataFrame()
 
-        h5py_base_filename: str = os.path.join(abs_root_folder, "generated_consolidation.h5")
+        if select_indices is not None:
+            dataset_dictionary_pd = dataset_dictionary_pd.iloc[select_indices]
+
+        dataset_dictionary_pd.reset_index()
+
+        h5py_base_filename: str = os.path.join(abs_root_folder, f"generated_consolidation{'_' + tag if tag else ''}.h5")
         h5py_base_file: h5py.File = h5py.File(h5py_base_filename, "w", rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7)
 
-        for index in tqdm(range(len(dataset_dictionary_pd)), desc="Consolidating pregenerated files..."):
-            current_series: pandas.Series = dataset_dictionary_pd.iloc[index]
-            generated_filename: str = current_series[dataset_mapping[DatasetDictionary.GENERATED_FILENAME_KEY]]  # type: ignore
-            h5py_current_filename: str = os.path.join(abs_root_folder, generated_filename)
-            current_h5py_file: h5py.File = h5py.File(h5py_current_filename, rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7)
-            current_group: h5py.Group = h5py_base_file.create_group(generated_filename)
-            for key, value in current_h5py_file.attrs.items():
-                current_group.attrs[key] = value
-            for dataset_name, value in current_h5py_file.items():
-                if isinstance(value, h5py.Dataset):
-                    data: ndarray = value[()]
-                    current_group.create_dataset(name=dataset_name, data=data, chunks=data.shape, compression=32001, compression_opts=(0, 0, 0, 0, 9, 1, 1), shuffle=False)  # blosc compression
 
-        h5py_base_file.close()
+        with tqdm(total=len(dataset_dictionary_pd)) as pbar:
+            for index in range(len(dataset_dictionary_pd)):
+                current_series: pandas.Series = dataset_dictionary_pd.iloc[index]
+                generated_filename: str = current_series[dataset_mapping[DatasetDictionary.GENERATED_FILENAME_KEY]]  # type: ignore
+                pbar.set_description(f"Consolidating pregenerated files ({tag if tag else 'unknown'} -> {generated_filename})...")
+                h5py_current_filename: str = os.path.join(abs_root_folder, generated_filename)
+                with h5py.File(h5py_current_filename, rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7, driver="core") as current_h5py_file:
+                    current_group: h5py.Group = h5py_base_file.create_group(generated_filename)
+                    for key, value in current_h5py_file.attrs.items():
+                        current_group.attrs[key] = value
+                    for dataset_name, value in current_h5py_file.items():
+                        if isinstance(value, h5py.Dataset):
+                            data: ndarray = value[()]
+                            current_group.create_dataset(name=dataset_name, data=data, chunks=(1,*data.shape[1:]), **hdf5plugin.Blosc2(
+                                cname = 'lz4',
+                                clevel = compress_level,
+                                filters = compress_filter,
+                            ))
+                pbar.update(1)
+
+            h5py_base_file.close()
 
     class Pregenerator:
         """Pregenerate preprocessing to h5 file(s) from a video. This class is designed to be independent from other preprocessing classes"""

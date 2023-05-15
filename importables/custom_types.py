@@ -47,3 +47,15 @@ ColorRGB = Union[Tuple[int, int, int], ndarray]
 ColorRGBXY = Union[Tuple[int, int, int, int, int], ndarray]
 ColorXY = Union[Tuple[int, int], ndarray]
 ColorInput = Union[ColorRGB, ColorXY, ColorRGBXY]
+
+# interfaces
+class NameAdapterInterface:
+
+    def __call__(self, original_name: str) -> Any:
+        return self.transform(original_name)
+
+    def transform(self, original_name: str) -> str:
+        return original_name
+
+    def inverse_transform(self, original_name: str) -> str:
+        return original_name
