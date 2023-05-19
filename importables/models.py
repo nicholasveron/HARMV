@@ -59,8 +59,8 @@ def default_train_one_epoch(
 
                 start_time.record() # type: ignore
 
-                inputs: Tensor = data[training_parameters["data_selector"]].to("cuda")
-                labels: Tensor = data["label"].to("cuda")
+                inputs: Tensor = data[training_parameters["data_selector"]].to("cuda", non_blocking=True)
+                labels: Tensor = data["label"].to("cuda", non_blocking=True)
 
                 optimizer.zero_grad()
                 output: Tensor = model(inputs)
@@ -122,8 +122,8 @@ def default_train_one_epoch(
 
                     start_time.record() # type: ignore
 
-                    inputs: Tensor = data[training_parameters["data_selector"]].to("cuda")
-                    labels: Tensor = data["label"].to("cuda")
+                    inputs: Tensor = data[training_parameters["data_selector"]].to("cuda", non_blocking=True)
+                    labels: Tensor = data["label"].to("cuda", non_blocking=True)
 
                     output: Tensor = model(inputs)
                     loss: Tensor = criterion_eval(output, labels)

@@ -270,13 +270,17 @@ h5py_test_filepath: str = os.path.join(current_root, h5py_test_filename)
 
 if current_parameters["train_in_memory"]:
     h5py_train_filepath = ramdisk_manager.copy(h5py_train_filepath)
+    h5py_train = h5py.File(h5py_train_filepath)
+else:
+    h5py_train = h5py.File(h5py_train_filepath, rdcc_nbytes=1024**2*8000, rdcc_nslots=1e7, rdcc_w0 = 0, libver='latest')
 
 
 if current_parameters["test_in_memory"]:
     h5py_test_filepath = ramdisk_manager.copy(h5py_test_filepath)
+    h5py_test = h5py.File(h5py_test_filepath)
+else:
+    h5py_test = h5py.File(h5py_test_filepath, rdcc_nbytes=1024**2*8000, rdcc_nslots=1e7, rdcc_w0 = 0, libver='latest')
 
-h5py_train = h5py.File(h5py_train_filepath, rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7, rdcc_w0 = 0, swmr= True, libver='latest')
-h5py_test = h5py.File(h5py_test_filepath, rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7, rdcc_w0 = 0, swmr=True, libver='latest')
 
 train_pd.reset_index()
 test_pd.reset_index()
