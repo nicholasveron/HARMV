@@ -40,37 +40,20 @@ def model_trainer_arg_wrapper(
 for model_index in [1,3,5]:
     model_trainer_arg_wrapper(model=model_index, batch_size=32, epoch=5, hidden_cell_count=128)
 
+# test for timesteps vs lstm cells (10% data, all, 5 epoch)
+timesteps = [5,10,15,20,25,30,35,40]
+lstm_counts = [8,16,32,64,128,256,512,1024]
+for t in timesteps:
+    for l in lstm_counts:
+        model_trainer_arg_wrapper(model=5, batch_size=32, epoch=5, timesteps=t, hidden_cell_count=l, data_use=0.1)
 
-# DEFAULT_EPOCH = 5
-# DEFAULT_DATA_USE = 1
+# test for mask vs crop (10% data, all, 5 epoch)
+for mask in [False,True]:
+    for crop in [False,True]:
+        model_trainer_arg_wrapper(model=5, batch_size=32, epoch=5, hidden_cell_count=128, mask=mask, crop=crop, data_use=0.1)
 
-# # LIST_MODEL = [5, 4, 2, 3]
-# # LIST_MODEL = [0,1,2,3,4,5]
-# LIST_MODEL = [1]
-# LIST_HIDDEN_COUNT = [128]
-# LIST_TIMESTEPS = [30]
-# LIST_MASK = [True]
-# LIST_CROP = [True]
-# LIST_BOUNDING_VALUE = [32]
-# LIST_DATA_SELECTOR = ["motion_vector"]
+# test for best bounding value (10% data, all, 5 epoch)
+for bounding_value in [8,16,32,64,128]:
+    model_trainer_arg_wrapper(model=5, batch_size=32, epoch=5, timesteps=30, hidden_cell_count=128, bounding_value=bounding_value, data_use=0.1)
 
-# for ds in LIST_DATA_SELECTOR:
-#     for ma in LIST_MASK:
-#         for cr in LIST_CROP:
-#             for bv in LIST_BOUNDING_VALUE:
-#                 for ts in LIST_TIMESTEPS:
-#                     for hc in LIST_HIDDEN_COUNT:
-#                         for mo in LIST_MODEL:
-#                             print("Running arguments: ", 
-#                                   f"\n\tData Selector: {ds}",
-#                                   f"\n\tMask: {ma}",
-#                                   f"\n\tCrop: {cr}",
-#                                   f"\n\tBounding Value: {bv}",
-#                                   f"\n\tTimesteps: {ts}",
-#                                   f"\n\tHidden Cell Count: {hc}",
-#                                   f"\n\tModel: {mo}"
-#                                   )
-#                             subprocess.run(
-#                                 shell=True,
-#                                 args=f"python model_trainer.py --use_cmd_args --epoch={DEFAULT_EPOCH} --data_use={DEFAULT_DATA_USE} --data_selector='{ds}' --model={mo} --hidden_cell_count={hc} --timesteps={ts} --mask={ma} --crop={cr} --bounding_value={bv}"
-#                             )
+

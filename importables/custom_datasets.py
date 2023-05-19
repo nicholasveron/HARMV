@@ -11,7 +11,8 @@ from tqdm.auto import tqdm
 from .utilities import Utilities
 from .constants import (
     NTU_ACTION_DATASET_MAP,
-    UCF101_DATASET_MAP
+    UCF101_DATASET_MAP,
+    HMDB51_DATASET_MAP,
 )
 from .preprocessing_managers import PreprocessingManagers, DatasetDictionary
 from .custom_types import (
@@ -370,4 +371,5 @@ class FlowDataset(torch.utils.data.Dataset):
 register_datasets: dict[str,Tuple[str,dict,dict]] = {
     "NTU RGB+D 120 (limited)": ("/mnt/c/Skripsi/dataset-pregen", DatasetDictionary.Mappings.NTU_ACTION_RECOGNITION_DATASET, NTU_ACTION_DATASET_MAP),
     "UCF101": ("/mnt/c/Skripsi/UCF-101-pregen", DatasetDictionary.Mappings.UCF101_ACTION_RECOGNITION_DATASET, UCF101_DATASET_MAP),
+    "HMDB51": ("/mnt/c/Skripsi/HMDB51-pregen", DatasetDictionary.Mappings.HMDB51_ACTION_RECOGNITION_DATASET, HMDB51_DATASET_MAP)
 }

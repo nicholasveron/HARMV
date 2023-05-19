@@ -59,12 +59,15 @@ for category_folder in tqdm(category_list):
         abs_vid_path = os.path.abspath(video_path)
         abs_target_vid_path = os.path.abspath(target_video_path).split(".avi")[0] + ".mp4"
 
+        os.system("clear")
+
         ffmpeg_li = [
             "ffmpeg",
-            "-i", "'%s'" % abs_vid_path,
+            "-i", '"%s"' % abs_vid_path,
             "-vcodec", "h264_nvenc",
             "-b:v", args.bitrate,
-            "'%s'" % abs_target_vid_path
+            "-vf" ,'"pad=max(320\,iw):240:-1:-1, crop=min(320\,iw):240"',
+            '"%s"' % abs_target_vid_path
         ]
 
         FFMPEG_CMD = " ".join(ffmpeg_li)

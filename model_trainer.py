@@ -10,6 +10,7 @@ import numpy
 import argparse
 import torchinfo
 import torchvision
+import distutils.util
 import torch.utils.data
 import importables.models
 import importables.constants
@@ -26,7 +27,7 @@ from importables.constants import (
 from importables.custom_types import (
     List
 )
-ramdisk_manager = Utilities.RamDiskManager("/mnt/ramdisk")
+ramdisk_manager = Utilities.RamDiskManager("/dev/shm")
 def clear_ramdisk_hook(type, value, tb):
     import traceback
     traceback.print_exception(type, value, tb)
@@ -48,15 +49,15 @@ parser.add_argument("--timesteps", type=int, nargs="?", help="Timesteps")
 parser.add_argument("--hidden_cell_count", type=int, nargs="?", help="Hidden Cell Count")
 parser.add_argument("--learning_rate", type=float, nargs="?", help="Learning Rate")
 parser.add_argument("--epoch", type=int, nargs="?", help="Epoch")
-parser.add_argument("--epoch_ask_continue", type=bool, nargs="?", help="Epoch Ask Continue")
+parser.add_argument("--epoch_ask_continue", type=lambda x: bool(distutils.util.strtobool(x)), nargs="?", help="Epoch Ask Continue")
 parser.add_argument("--dataset", type=int, nargs="?", help="Dataset")
 parser.add_argument("--split", type=int, nargs="?", help="Split")
 parser.add_argument("--data_use", type=float, nargs="?", help="Data Use %")
 parser.add_argument("--data_selector", type=str, nargs="?", help="Data Selector")
-parser.add_argument("--train_in_memory", type=bool, nargs="?", help="Train In Memory")
-parser.add_argument("--test_in_memory", type=bool, nargs="?", help="Test In Memory")
-parser.add_argument("--mask", type=bool, nargs="?", help="Mask Data")
-parser.add_argument("--crop", type=bool, nargs="?", help="Crop Data")
+parser.add_argument("--train_in_memory", type=lambda x: bool(distutils.util.strtobool(x)), nargs="?", help="Train In Memory")
+parser.add_argument("--test_in_memory", type=lambda x: bool(distutils.util.strtobool(x)), nargs="?", help="Test In Memory")
+parser.add_argument("--mask", type=lambda x: bool(distutils.util.strtobool(x)), nargs="?", help="Mask Data")
+parser.add_argument("--crop", type=lambda x: bool(distutils.util.strtobool(x)), nargs="?", help="Crop Data")
 parser.add_argument("--bounding_value", type=float, nargs="?", help="Bounding Value")
 parser.add_argument("--run_comment", type=str, nargs="?", help="Run Comment")
 
@@ -351,8 +352,8 @@ print("Train class total frames (balanced with weights)")
 print(((train_frames - (current_parameters["timesteps"]-1))*class_weight).round().astype(int))
 
 num_workers = (torch.get_num_threads() // 2)
-train_dl = torch.utils.data.DataLoader(train_ds, current_parameters["batch_size"], num_workers=num_workers, shuffle=True)
-test_dl = torch.utils.data.DataLoader(test_ds, current_parameters["batch_size"], num_workers=num_workers, shuffle=True)
+train_dl = torch.utils.data.DataLoader(train_ds, current_parameters["batch_size"], num_workers=num_workers+(num_workers//2), shuffle=True)
+test_dl = torch.utils.data.DataLoader(test_ds, current_parameters["batch_size"], num_workers=num_workers-(num_workers//2), shuffle=True)
 
 print("")
 print("Initiating Model ...")

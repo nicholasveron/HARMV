@@ -46,10 +46,9 @@ target_size = 416
 
 # pmgr.pregenerate_preprocessing(test_video)
 
-# PreprocessingManagers.generate_dataset_dictionary_recursively("/mnt/c/Skripsi/dataset-h264", DatasetDictionary.Mappings.NTU_ACTION_RECOGNITION_DATASET)
+# PreprocessingManagers.generate_dataset_dictionary_recursively("/mnt/c/Skripsi/HMDB51-h264", DatasetDictionary.Mappings.HMDB51_ACTION_RECOGNITION_DATASET, DatasetDictionary.NameAdapters.HMDB_51_ACTION_RECOGNITION_DATASET())
 
-PreprocessingManagers.consolidate_pregenerated_preprocessing_files("/mnt/c/Skripsi/dataset-pregen", DatasetDictionary.Mappings.NTU_ACTION_RECOGNITION_DATASET)
-exit()
+# PreprocessingManagers.consolidate_pregenerated_preprocessing_files("/mnt/c/Skripsi/dataset-pregen", DatasetDictionary.Mappings.NTU_ACTION_RECOGNITION_DATASET)
 
 h5_example_path = "/mnt/c/Skripsi/dataset-pregen/S013C001P019R002A016_rgb.h5"
 h5py_handle = h5py.File(h5_example_path, rdcc_nbytes=1024**2*4000, rdcc_nslots=1e7)

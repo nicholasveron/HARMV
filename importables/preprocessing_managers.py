@@ -23,7 +23,20 @@ from .custom_types import (
     MaskWithMostCenterBoundingBoxData,
     NameAdapterInterface,
 )
-from .constants import UCF101_DATASET_MAP
+from .constants import (
+    UCF101_DATASET_MAP,
+    HMDB51_DATASET_MAP,
+    HMDB51_DATASET_MAP,
+    HMBD51_VISIBLE_BODY_PARTS_CODEMAP,
+    HMBD51_VISIBLE_BODY_PARTS_CODEMAP,
+    HMBD51_CAMERA_MOTION_CODEMAP,
+    HMBD51_CAMERA_MOTION_CODEMAP,
+    HMBD51_CAMERA_VIEWPOINT_CODEMAP,
+    HMBD51_CAMERA_VIEWPOINT_CODEMAP,
+    HMBD51_VIDEO_QUALITY_CODEMAP,
+    HMBD51_VIDEO_QUALITY_CODEMAP,
+    HMDB51_NUMBER_OF_PEOPLE_PREFIX
+    )
 
 class DatasetDictionary:
     """Pandas wrapper that manages dataset dictionary"""
@@ -43,7 +56,6 @@ class DatasetDictionary:
             def __init__(self) -> None:
                 self.__keys: List = list(UCF101_DATASET_MAP.keys())
                 self.__values: List = list(map(lambda x: x.lower(), list(UCF101_DATASET_MAP.values())))
-                self.__dataset_mapping: dict = DatasetDictionary.Mappings.UCF101_ACTION_RECOGNITION_DATASET
 
             def transform(self, original_name: str) -> str:
                 split_strings: List = original_name.split("_")
@@ -58,15 +70,107 @@ class DatasetDictionary:
                     + f"G{str(group_number).rjust(3,'0')}"
 
             def inverse_transform(self, original_name: str) -> str:
-                first_split: str = original_name.split(self.__dataset_mapping["ActionID"])[1]
+                first_split: str = original_name.split("A")[1]
                 action_number: int = int(first_split[:3])
                 action_string: str = UCF101_DATASET_MAP[action_number]
-                second_split: str = first_split.split(self.__dataset_mapping["GroupID"])[1]
+                second_split: str = first_split.split("G")[1]
                 clip_number: int = int(second_split[:3])
-                third_split: str = second_split.split(self.__dataset_mapping["ClipID"])[1]
+                third_split: str = second_split.split("C")[1]
                 group_number: int = int(third_split[:3])
 
                 return f"v_{action_string}_g{str(group_number).rjust(2,'0')}_c{str(clip_number).rjust(2,'0')}"
+
+        class HMDB_51_ACTION_RECOGNITION_DATASET(NameAdapterInterface):
+            """Naming adapter for HMDB51 ACTION RECOGNITION DATASET"""
+
+            def __init__(self) -> None:
+                self.__action_keys: List = list(HMDB51_DATASET_MAP.keys())
+                self.__action_values: List = list(HMDB51_DATASET_MAP.values())
+                self.__vbp_keys: List = list(HMBD51_VISIBLE_BODY_PARTS_CODEMAP.keys())
+                self.__vbp_values: List = list(HMBD51_VISIBLE_BODY_PARTS_CODEMAP.values())
+                self.__camera_motion_keys: List = list(HMBD51_CAMERA_MOTION_CODEMAP.keys())
+                self.__camera_motion_values: List = list(HMBD51_CAMERA_MOTION_CODEMAP.values())
+                self.__camera_viewpoint_keys: List = list(HMBD51_CAMERA_VIEWPOINT_CODEMAP.keys())
+                self.__camera_viewpoint_values: List = list(HMBD51_CAMERA_VIEWPOINT_CODEMAP.values())
+                self.__video_quality_keys: List = list(HMBD51_VIDEO_QUALITY_CODEMAP.keys())
+                self.__video_quality_values: List = list(HMBD51_VIDEO_QUALITY_CODEMAP.values())
+
+            def transform(self, original_name: str) -> str:
+                split_strings: List = original_name.split("_")[::-1]
+
+                vid_num_str, vid_qua_str, cam_view_str, num_peo_str, cam_mot_str, vis_body_str, action_b, action_a = split_strings[:8]
+                pos_action_name_str: str = "_".join([action_a, action_b])
+                
+                if pos_action_name_str in self.__action_values:
+                    action_index: int = self.__action_values.index(pos_action_name_str.lower())
+                    desc_all: str = "_".join(split_strings[8:][::-1])
+                else:
+                    action_index: int = self.__action_values.index(action_b.lower())
+                    desc_all: str = "_".join(split_strings[7:][::-1])
+
+                vbp_index: int = self.__vbp_values.index(vis_body_str.lower())
+                camera_motion_index: int = self.__camera_motion_values.index(cam_mot_str.lower())
+                camera_viewpoint_index: int = self.__camera_viewpoint_values.index(cam_view_str.lower())
+                video_quality_index: int = self.__video_quality_values.index(vid_qua_str.lower())
+
+                action_number: int = self.__action_keys[action_index]
+                vbp_number: int = self.__vbp_keys[vbp_index]
+                camera_motion_number: int = self.__camera_motion_keys[camera_motion_index]
+                number_of_people: int = int(num_peo_str.split(HMDB51_NUMBER_OF_PEOPLE_PREFIX)[1])
+                camera_viewpoint_number: int = self.__camera_viewpoint_keys[camera_viewpoint_index]
+                video_quality_number: int = self.__video_quality_keys[video_quality_index]
+                video_number: int = int(vid_num_str)
+
+                return f"A{str(action_number).rjust(3,'0')}" \
+                    + f"B{str(vbp_number).rjust(3,'0')}" \
+                    + f"C{str(camera_motion_number).rjust(3,'0')}" \
+                    + f"N{str(number_of_people).rjust(3,'0')}" \
+                    + f"P{str(camera_viewpoint_number).rjust(3,'0')}" \
+                    + f"Q{str(video_quality_number).rjust(3,'0')}" \
+                    + f"X{str(video_number).rjust(3,'0')}" \
+                    + f"!!{desc_all}"
+
+            def inverse_transform(self, original_name: str) -> str:
+
+                original_name, description = original_name.split("!!")
+
+                original_name: str = original_name.split("A")[1]
+                action_number: int = int(original_name[:3])
+                action_string: str = HMDB51_DATASET_MAP[action_number]
+
+                original_name: str = original_name.split("B")[1]
+                vbp_number: int = int(original_name[:3])
+                vbp_string: str = HMBD51_VISIBLE_BODY_PARTS_CODEMAP[vbp_number]
+
+                original_name: str = original_name.split("C")[1]
+                camera_motion_number: int = int(original_name[:3])
+                camera_motion_string: str = HMBD51_CAMERA_MOTION_CODEMAP[camera_motion_number]
+
+                original_name: str = original_name.split("N")[1]
+                number_of_people: int = int(original_name[:3])
+                number_of_people_string: str = f"np{number_of_people}"
+
+                original_name: str = original_name.split("P")[1]
+                camera_viewpoint_number: int = int(original_name[:3])
+                camera_viewpoint_string: str = HMBD51_CAMERA_VIEWPOINT_CODEMAP[camera_viewpoint_number]
+
+                original_name: str = original_name.split("Q")[1]
+                video_quality_number: int = int(original_name[:3])
+                video_quality_string: str = HMBD51_VIDEO_QUALITY_CODEMAP[video_quality_number]
+
+                original_name: str = original_name.split("X")[1]
+                video_number: int = int(original_name[:3])
+                video_number_string: str = str(video_number)
+
+                return "_".join([
+                    description, 
+                    action_string, 
+                    vbp_string, 
+                    camera_motion_string, 
+                    number_of_people_string, 
+                    camera_viewpoint_string, 
+                    video_quality_string,
+                    video_number_string])
 
     class Mappings:
         NTU_ACTION_RECOGNITION_DATASET = {
@@ -84,6 +188,19 @@ class DatasetDictionary:
             "A": "ActionID",
             "C": "ClipID",
             "G": "GroupID",
+            "/": "SourceFilePath",
+            ".": "GeneratedFileName",
+            "#": "FrameCount",
+        }
+
+        HMDB51_ACTION_RECOGNITION_DATASET = {
+            "A": "ActionID",
+            "B": "VisibleBodyPartsID",
+            "C": "CameraMotionID",
+            "N": "NumberOfPeople",
+            "P": "CameraViewpointID",
+            "Q": "VideoQuality",
+            "X": "VideoNumber",
             "/": "SourceFilePath",
             ".": "GeneratedFileName",
             "#": "FrameCount",
@@ -165,7 +282,7 @@ class DatasetDictionary:
         if any(find_criterion):
             self.__dictionary = self.__dictionary[~find_criterion]
         try:
-            self.__dictionary = self.__dictionary.append(dataset_dict, ignore_index=True)  # type: ignore
+            self.__dictionary = pandas.concat([self.__dictionary, pandas.DataFrame([dataset_dict])], ignore_index=True)
         except:
             return False
         return True

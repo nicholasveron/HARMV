@@ -485,6 +485,113 @@ class HARMV_CNNLSTM_ShuffleNetv2x0_5_Single(torch.nn.Module):
             *args,**kwargs
         )
 
+class HARMV_CNNLSTM_ShuffleNetv2x0_5_Single_Rev(torch.nn.Module):
+    def __init__(self, category_count: int, timesteps: int, hidden_cell: int) -> None:
+        super(HARMV_CNNLSTM_ShuffleNetv2x0_5_Single_Rev, self).__init__()
+        self.__lstm_hidden: int = hidden_cell
+        self.__timesteps: int = timesteps
+        self.feature_extractor: torchvision.models.ShuffleNetV2 = torchvision.models.shufflenet_v2_x0_5(torchvision.models.ShuffleNet_V2_X0_5_Weights.DEFAULT)
+        self.feature_extractor.conv1[0] = torch.nn.Conv2d(2, 24, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+        # shufflenet avgpool using mean, see implementation
+        self.feature_extractor.fc = torch.nn.Identity()  # type: ignore
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = False
+        self.feature_extractor = self.feature_extractor.requires_grad_(False)
+        self.feature_extractor = self.feature_extractor.eval()
+        self.lstm1: torch.nn.LSTM = torch.nn.LSTM(input_size= 1024, hidden_size=self.__lstm_hidden, bidirectional=True, batch_first=True)
+        self.fc1:torch.nn.Linear = torch.nn.Linear(self.__timesteps * 1024,  self.__lstm_hidden)
+        self.output:torch.nn.Linear = torch.nn.Linear(self.__lstm_hidden, category_count)
+
+    def forward(self, x: Tensor) -> Tensor:
+        batch_size, timesteps, C, H, W = x.shape
+        assert self.__timesteps == timesteps, f"Timesteps not equal to {self.__timesteps}"
+        with torch.no_grad():
+            x = x.view(batch_size * self.__timesteps, C, H, W)
+            x = self.feature_extractor(x)
+            x = x.view(batch_size, self.__timesteps, -1)
+
+        self.lstm1.flatten_parameters()
+        X, (_, _) = self.lstm1(x)
+        
+        x = x.view(batch_size, self.__timesteps * 1024)
+
+        x = torch.nn.functional.relu(self.fc1(x))
+        x = self.output(x)
+
+        return x
+
+    @staticmethod
+    def comment() -> str:
+        return """CNN Model Shape with single layer of lstm, 2 layer of fc for classification
+        ShuffleNetv2x0_5 is used for cnn feature extraction
+        """
+
+    @staticmethod
+    def resolution() -> int:
+        return 224
+
+    @staticmethod
+    def train_one_epoch(
+        *args,**kwargs
+    ) -> None:
+        return default_train_one_epoch(
+            *args,**kwargs
+        )
+
+class HARMV_CNNLSTM_ShuffleNetv2x0_5_DoubleLSTM(torch.nn.Module):
+    def __init__(self, category_count: int, timesteps: int, hidden_cell: int) -> None:
+        super(HARMV_CNNLSTM_ShuffleNetv2x0_5_DoubleLSTM, self).__init__()
+        self.__lstm_hidden: int = hidden_cell
+        self.__timesteps: int = timesteps
+        self.feature_extractor: torchvision.models.ShuffleNetV2 = torchvision.models.shufflenet_v2_x0_5(torchvision.models.ShuffleNet_V2_X0_5_Weights.DEFAULT)
+        self.feature_extractor.conv1[0] = torch.nn.Conv2d(2, 24, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+        # shufflenet avgpool using mean, see implementation
+        self.feature_extractor.fc = torch.nn.Identity()  # type: ignore
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = False
+        self.feature_extractor = self.feature_extractor.requires_grad_(False)
+        self.feature_extractor = self.feature_extractor.eval()
+        self.lstm1: torch.nn.LSTM = torch.nn.LSTM(1024,  self.__lstm_hidden, bidirectional=True, batch_first=True)
+        self.lstm2: torch.nn.LSTM = torch.nn.LSTM(self.__lstm_hidden * 2,  self.__lstm_hidden, bidirectional=True, batch_first=True)
+        self.fc1:torch.nn.Linear = torch.nn.Linear(self.__lstm_hidden * 2,  self.__lstm_hidden*2, bidirectional=True, batch_first=True)
+        self.output:torch.nn.Linear = torch.nn.Linear(self.__lstm_hidden * 2, category_count)
+
+    def forward(self, x: Tensor) -> Tensor:
+        batch_size, timesteps, C, H, W = x.shape
+        assert self.__timesteps == timesteps, f"Timesteps not equal to {self.__timesteps}"
+        with torch.no_grad():
+            x = x.view(batch_size * self.__timesteps, C, H, W)
+            x = self.feature_extractor(x)
+            x = x.view(batch_size, self.__timesteps, -1)
+
+        self.lstm1.flatten_parameters()
+        self.lstm2.flatten_parameters()
+        x, (h, c) = self.lstm1(x)
+        x, (_, _) = self.lstm2(x, (h, c))
+
+        x = torch.nn.functional.relu(self.fc1(x))
+        x = self.output(x)
+
+        return x
+
+    @staticmethod
+    def comment() -> str:
+        return """CNN Model Shape with double layer of lstm, 2 layer of fc for classification
+        ShuffleNetv2x0_5 is used for cnn feature extraction
+        """
+
+    @staticmethod
+    def resolution() -> int:
+        return 224
+
+    @staticmethod
+    def train_one_epoch(
+        *args,**kwargs
+    ) -> None:
+        return default_train_one_epoch(
+            *args,**kwargs
+        )
+
 register_model = [
     HARMV_CNNLSTM_ResNet18_Single,
     HARMV_CNNLSTM_MobileNetv3_Single,
@@ -492,4 +599,5 @@ register_model = [
     HARMV_CNNLSTM_MNASNetx0_5_Single,
     HARMV_CNNLSTM_SqueezeNet1_1_Single,
     HARMV_CNNLSTM_ShuffleNetv2x0_5_Single,
+    HARMV_CNNLSTM_ShuffleNetv2x0_5_Single_Rev,
 ]

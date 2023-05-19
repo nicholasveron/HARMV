@@ -1,5 +1,5 @@
 # PREPROCESSING_TARGET_RESOLUTION = 416 # ntu
-PREPROCESSING_TARGET_RESOLUTION = 320 #ucf101
+PREPROCESSING_TARGET_RESOLUTION = 320 #ucf101 & hmdb
 PREPROCESSING_ARGUMENTS_MOTION_VECTOR_PROCESSOR = {
     "raw_motion_vectors": True,
     "target_size": PREPROCESSING_TARGET_RESOLUTION,
@@ -145,7 +145,6 @@ NTU_ACTION_DATASET_MAP: dict[int, str] = {
     118: "exchange things",
     119: "support somebody",
     120: "rock-paper-scissors",
-
 }
 
 NTU_ACTION_DAILY_ACTIONS_SET = set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
@@ -283,8 +282,88 @@ UCF101_DATASET_MAP: dict[int, str] = {
     99: "WallPushups",
     100: "WritingOnBoard",
     101: "YoYo",
-
 }
+
+HMDB51_DATASET_MAP: dict[int, str] = {
+    1: "brush_hair",
+    2: "cartwheel",
+    3: "catch",
+    4: "chew",
+    5: "clap",
+    6: "climb",
+    7: "climb_stairs",
+    8: "dive",
+    9: "draw_sword",
+    10: "dribble",
+    11: "drink",
+    12: "eat",
+    13: "fall_floor",
+    14: "fencing",
+    15: "flic_flac",
+    16: "golf",
+    17: "handstand",
+    18: "hit",
+    19: "hug",
+    20: "jump",
+    21: "kick",
+    22: "kick_ball",
+    23: "kiss",
+    24: "laugh",
+    25: "pick",
+    26: "pour",
+    27: "pullup",
+    28: "punch",
+    29: "push",
+    30: "pushup",
+    31: "ride_bike",
+    32: "ride_horse",
+    33: "run",
+    34: "shake_hands",
+    35: "shoot_ball",
+    36: "shoot_bow",
+    37: "shoot_gun",
+    38: "sit",
+    39: "situp",
+    40: "smile",
+    41: "smoke",
+    42: "somersault",
+    43: "stand",
+    44: "swing_baseball",
+    45: "sword",
+    46: "sword_exercise",
+    47: "talk",
+    48: "throw",
+    49: "turn",
+    50: "walk",
+    51: "wave",
+}
+
+HMBD51_VISIBLE_BODY_PARTS_CODEMAP: dict[int, str] = {
+    1: "h",
+    2: "u",
+    3: "f",
+    4: "l",
+}
+
+HMBD51_CAMERA_MOTION_CODEMAP: dict[int, str] = {
+    1: "cm",
+    2: "nm",
+}
+
+HMBD51_CAMERA_VIEWPOINT_CODEMAP: dict[int, str] = {
+    1: "fr",
+    2: "ba",
+    3: "le",
+    4: "ri",
+}
+
+HMBD51_VIDEO_QUALITY_CODEMAP: dict[int, str] = {
+    1: "goo",
+    2: "med",
+    3: "bad",
+}
+
+HMDB51_NUMBER_OF_PEOPLE_PREFIX: str = "np"
 
 DEFAULT_TRAINING_PARAMETERS = {
     "epoch": -1,
