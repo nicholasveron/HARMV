@@ -66,7 +66,7 @@ for category_folder in tqdm(category_list):
             "-i", '"%s"' % abs_vid_path,
             "-vcodec", "h264_nvenc",
             "-b:v", args.bitrate,
-            "-vf" ,'"pad=max(320\,iw):240:-1:-1, crop=min(320\,iw):240"',
+            "-vf", '"pad=max(320\,iw):240:-1:-1, crop=min(320\,iw):240"',
             '"%s"' % abs_target_vid_path
         ]
 

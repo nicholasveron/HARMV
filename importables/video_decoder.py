@@ -45,7 +45,7 @@ class VideoDecoderProcessSpawner:
                 frame_type
             )
         )  # initialization frame
-        timeout_time: int = self.__update_rate*10
+        timeout_time: int = self.__update_rate*20
         while True:
             start: float = time.perf_counter()
             data: Any = video_capturer.read()

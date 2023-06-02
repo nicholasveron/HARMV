@@ -137,3 +137,4 @@ optimized_models/
 ptlflow_logs/log_run.txt
 runs/
 temp/
+tensorboard_logs/

@@ -28,10 +28,13 @@ from importables.custom_types import (
     List
 )
 ramdisk_manager = Utilities.RamDiskManager("/dev/shm")
+
+
 def clear_ramdisk_hook(type, value, tb):
     import traceback
     traceback.print_exception(type, value, tb)
     ramdisk_manager.clear()
+
 
 sys.excepthook = clear_ramdisk_hook
 
@@ -88,7 +91,7 @@ print("Training Parameters")
 
 print(f"\tBatch Size ({current_parameters['batch_size']})[1-inf]: ", end="")
 if parsed_args.use_cmd_args:
-    batch_size_input= parsed_args.batch_size if parsed_args.batch_size is not None else ""
+    batch_size_input = parsed_args.batch_size if parsed_args.batch_size is not None else ""
     print(batch_size_input)
 else:
     batch_size_input = input().strip().lower()
@@ -97,7 +100,7 @@ if batch_size_input != "":
 
 print(f"\tTimesteps ({current_parameters['timesteps']})[1-inf]: ", end="")
 if parsed_args.use_cmd_args:
-    timesteps_input= parsed_args.timesteps if parsed_args.timesteps is not None else ""
+    timesteps_input = parsed_args.timesteps if parsed_args.timesteps is not None else ""
     print(timesteps_input)
 else:
     timesteps_input = input().strip().lower()
@@ -106,7 +109,7 @@ if timesteps_input != "":
 
 print(f"\tHidden Cell Count ({current_parameters['hidden_cell_count']})[1-inf]: ", end="")
 if parsed_args.use_cmd_args:
-    hidden_cell_count_input= parsed_args.hidden_cell_count if parsed_args.hidden_cell_count is not None else ""
+    hidden_cell_count_input = parsed_args.hidden_cell_count if parsed_args.hidden_cell_count is not None else ""
     print(hidden_cell_count_input)
 else:
     hidden_cell_count_input = input().strip().lower()
@@ -115,7 +118,7 @@ if hidden_cell_count_input != "":
 
 print(f"\tLearning Rate ({current_parameters['learning_rate']})[0-inf]: ", end="")
 if parsed_args.use_cmd_args:
-    learning_rate_input= parsed_args.learning_rate if parsed_args.learning_rate is not None else ""
+    learning_rate_input = parsed_args.learning_rate if parsed_args.learning_rate is not None else ""
     print(learning_rate_input)
 else:
     learning_rate_input = input().strip().lower()
@@ -124,7 +127,7 @@ if learning_rate_input != "":
 
 print(f"\tEpoch (Ask each epoch)[1-inf]: ", end="")
 if parsed_args.use_cmd_args:
-    epoch_input= parsed_args.epoch if parsed_args.epoch is not None else ""
+    epoch_input = parsed_args.epoch if parsed_args.epoch is not None else ""
     print(epoch_input)
 else:
     epoch_input = input().strip().lower()
@@ -134,7 +137,7 @@ if epoch_input != "":
 if current_parameters["epoch"] > 0:
     print(f"\tEpoch Ask Continue ({current_parameters['epoch_ask_continue']})[y/n]: ", end="")
     if parsed_args.use_cmd_args:
-        epoch_ask_continue_input= ("y" if parsed_args.epoch_ask_continue else "n") if parsed_args.epoch_ask_continue is not None else ""
+        epoch_ask_continue_input = ("y" if parsed_args.epoch_ask_continue else "n") if parsed_args.epoch_ask_continue is not None else ""
         print(epoch_ask_continue_input)
     else:
         epoch_ask_continue_input = input().strip().lower()
@@ -180,7 +183,7 @@ current_split: dict = split_list[split_index]
 
 print(f"\tData Use % ({current_parameters['data_use']})[0-1]: ", end="")
 if parsed_args.use_cmd_args:
-    data_use_input= parsed_args.data_use if parsed_args.data_use else ""
+    data_use_input = parsed_args.data_use if parsed_args.data_use else ""
     print(data_use_input)
 else:
     data_use_input = input().strip().lower()
@@ -189,7 +192,7 @@ if data_use_input != "":
 
 print(f"\tData Selector ({current_parameters['data_selector']})[str]: ", end="")
 if parsed_args.use_cmd_args:
-    data_selector_input= parsed_args.data_selector if parsed_args.data_selector else ""
+    data_selector_input = parsed_args.data_selector if parsed_args.data_selector else ""
     print(data_selector_input)
 else:
     data_selector_input = input().strip().lower()
@@ -198,7 +201,7 @@ if data_selector_input != "":
 
 print(f"\tEnable Train In Memory ({current_parameters['train_in_memory']})[y/n]: ", end="")
 if parsed_args.use_cmd_args:
-    train_in_memory_input= ("y" if parsed_args.train_in_memory else "n") if parsed_args.train_in_memory is not None else ""
+    train_in_memory_input = ("y" if parsed_args.train_in_memory else "n") if parsed_args.train_in_memory is not None else ""
     print(train_in_memory_input)
 else:
     train_in_memory_input = input().strip().lower()
@@ -207,7 +210,7 @@ if train_in_memory_input in ("y", "n"):
 
 print(f"\tEnable Test In Memory ({current_parameters['test_in_memory']})[y/n]: ", end="")
 if parsed_args.use_cmd_args:
-    test_in_memory_input= ("y" if parsed_args.test_in_memory else "n") if parsed_args.test_in_memory is not None else ""
+    test_in_memory_input = ("y" if parsed_args.test_in_memory else "n") if parsed_args.test_in_memory is not None else ""
     print(test_in_memory_input)
 else:
     test_in_memory_input = input().strip().lower()
@@ -216,7 +219,7 @@ if test_in_memory_input in ("y", "n"):
 
 print(f"\tMask Data ({current_parameters['mask']})[y/n]: ", end="")
 if parsed_args.use_cmd_args:
-    mask_input= ("y" if parsed_args.mask else "n") if parsed_args.mask is not None else ""
+    mask_input = ("y" if parsed_args.mask else "n") if parsed_args.mask is not None else ""
     print(mask_input)
 else:
     mask_input = input().strip().lower()
@@ -225,7 +228,7 @@ if mask_input in ("y", "n"):
 
 print(f"\tCrop Data ({current_parameters['crop']})[y/n]: ", end="")
 if parsed_args.use_cmd_args:
-    crop_input= ("y" if parsed_args.crop else "n") if parsed_args.crop is not None else ""
+    crop_input = ("y" if parsed_args.crop else "n") if parsed_args.crop is not None else ""
     print(crop_input)
 else:
     crop_input = input().strip().lower()
@@ -234,7 +237,7 @@ if crop_input in ("y", "n"):
 
 print(f"\tBounding Value ({current_parameters['bounding_value']})[1-inf]: ", end="")
 if parsed_args.use_cmd_args:
-    bounding_value_input= parsed_args.bounding_value if parsed_args.bounding_value else ""
+    bounding_value_input = parsed_args.bounding_value if parsed_args.bounding_value else ""
     print(bounding_value_input)
 else:
     bounding_value_input = input().strip().lower()
@@ -272,14 +275,14 @@ if current_parameters["train_in_memory"]:
     h5py_train_filepath = ramdisk_manager.copy(h5py_train_filepath)
     h5py_train = h5py.File(h5py_train_filepath)
 else:
-    h5py_train = h5py.File(h5py_train_filepath, rdcc_nbytes=1024**2*8000, rdcc_nslots=1e7, rdcc_w0 = 0, libver='latest')
+    h5py_train = h5py.File(h5py_train_filepath, rdcc_nbytes=1024**2*8000, rdcc_nslots=1e7, rdcc_w0=0, libver='latest')
 
 
 if current_parameters["test_in_memory"]:
     h5py_test_filepath = ramdisk_manager.copy(h5py_test_filepath)
     h5py_test = h5py.File(h5py_test_filepath)
 else:
-    h5py_test = h5py.File(h5py_test_filepath, rdcc_nbytes=1024**2*8000, rdcc_nslots=1e7, rdcc_w0 = 0, libver='latest')
+    h5py_test = h5py.File(h5py_test_filepath, rdcc_nbytes=1024**2*8000, rdcc_nslots=1e7, rdcc_w0=0, libver='latest')
 
 
 train_pd.reset_index()
@@ -314,9 +317,9 @@ train_ds = FlowDataset(
     h5py_train,
     current_parameters["timesteps"],
     torchvision.transforms.Compose([
-        FlowDataset.CropMask(crop=current_parameters["crop"], mask=current_parameters["mask"], replace_with=(0,0)),
+        FlowDataset.CropMask(crop=current_parameters["crop"], mask=current_parameters["mask"], replace_with=(0, 0)),
         FlowDataset.Bound(current_parameters["bounding_value"]),
-        FlowDataset.PadResize(current_model_class.resolution(), pad_with=(128,128)),
+        FlowDataset.PadResize(current_model_class.resolution(), pad_with=(128, 128)),
     ]),
     torchvision.transforms.Compose([
         FlowDataset.Rescale(1/255.),
@@ -331,9 +334,9 @@ test_ds = FlowDataset(
     h5py_test,
     current_parameters["timesteps"],
     torchvision.transforms.Compose([
-        FlowDataset.CropMask(crop=current_parameters["crop"], mask=current_parameters["mask"], replace_with=(0,0)),
+        FlowDataset.CropMask(crop=current_parameters["crop"], mask=current_parameters["mask"], replace_with=(0, 0)),
         FlowDataset.Bound(current_parameters["bounding_value"]),
-        FlowDataset.PadResize(current_model_class.resolution(), pad_with=(128,128)),
+        FlowDataset.PadResize(current_model_class.resolution(), pad_with=(128, 128)),
     ]),
     torchvision.transforms.Compose([
         FlowDataset.Rescale(1/255.),
@@ -342,7 +345,6 @@ test_ds = FlowDataset(
 )
 
 class_weight = train_ds.get_class_weight()
-class_weight = class_weight / max(class_weight)
 train_frames = train_pd.groupby(current_dictionary["A"]).sum()[current_dictionary[DatasetDictionary.FRAME_COUNT_KEY]]
 train_frames = train_frames.rename(index=current_mapping)
 print("")
@@ -351,25 +353,28 @@ print(train_frames - (current_parameters["timesteps"]-1))
 print("")
 print("Class weight")
 print(class_weight)
-print("")
-print("Train class total frames (balanced with weights)")
-print(((train_frames - (current_parameters["timesteps"]-1))*class_weight).round().astype(int))
 
-num_workers = (torch.get_num_threads() // 2)
-train_dl = torch.utils.data.DataLoader(train_ds, current_parameters["batch_size"], num_workers=num_workers+(num_workers//2), shuffle=True)
-test_dl = torch.utils.data.DataLoader(test_ds, current_parameters["batch_size"], num_workers=num_workers-(num_workers//2), shuffle=True)
+num_workers = torch.get_num_threads()
+Utilities.set_all_seed(importables.constants.RANDOM_SEED_BYTES)
+train_dl = torch.utils.data.DataLoader(train_ds, current_parameters["batch_size"], num_workers=num_workers, shuffle=True, pin_memory=True)
+test_dl = torch.utils.data.DataLoader(test_ds, current_parameters["batch_size"], num_workers=num_workers, shuffle=True, pin_memory=True)
 
 print("")
 print("Initiating Model ...")
 test_input = next(iter(train_dl))
 target_model: torch.nn.Module = current_model_class(class_count, current_parameters["timesteps"], current_parameters["hidden_cell_count"]).to("cuda")
-torchinfo.summary(target_model, input_data=test_input[current_parameters["data_selector"]].to("cuda"))
+model_summary: torchinfo.ModelStatistics = torchinfo.summary(target_model, input_data=test_input[current_parameters["data_selector"]].to("cuda"), verbose=2)
 
 print("")
 summary_writer = torch.utils.tensorboard.writer.SummaryWriter(
     log_dir=os.path.abspath(f"./runs/{int(time.time())} - {current_parameters['data_selector']} - {current_model_class.__name__}")
 )
-summary_writer.add_graph(target_model, test_input[current_parameters["data_selector"]].to("cuda"))
+
+try:
+    summary_writer.add_graph(target_model, test_input[current_parameters["data_selector"]].to("cuda"))
+except:
+    print("MODEL IS NOT GRAPHABLE")
+
 exp, ssi, sei = torch.utils.tensorboard.writer.hparams(current_parameters, {  # type: ignore
     "Loss/Train": None,
     "FPS/Train": None,

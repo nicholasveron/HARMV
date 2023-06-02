@@ -1,0 +1,43 @@
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-ubuntu2204.pin
+sudo mv cuda-ubuntu2204.pin /etc/apt/preferences.d/cuda-repository-pin-600
+wget https://developer.download.nvidia.com/compute/cuda/11.7.1/local_installers/cuda-repo-ubuntu2204-11-7-local_11.7.1-515.65.01-1_amd64.deb
+sudo dpkg -i cuda-repo-ubuntu2204-11-7-local_11.7.1-515.65.01-1_amd64.deb
+sudo cp /var/cuda-repo-ubuntu2204-11-7-local/cuda-*-keyring.gpg /usr/share/keyrings/
+sudo apt-get update
+sudo apt-get -y install cuda
+wget https://repo.anaconda.com/archive/Anaconda3-2023.03-1-Linux-x86_64.sh
+sudo bash ./Anaconda3-2023.03-1-Linux-x86_64.sh
+source .bashrc
+conda create -n thesis_linux_3.9 python=3.9 -y
+conda activate thesis_linux_3.9
+git clone https://github.com/illegallyCrushed/HARMV.git
+mkdir HARMV/libs && cd HARMV/libs
+wget https://github.com/WongKinYiu/yolov7/archive/refs/heads/mask.zip
+sudo apt-get install unzip -y
+unzip mask.zip
+rm mask.zip
+wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-mask.pt
+mv ./yolov7-mask.pt ./yolov7-mask/
+cp -r ./yolov7-mask/models/ ../models/
+cp -r ./yolov7-mask/utils/ ../utils/
+git clone https://github.com/facebookresearch/detectron2
+conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia -y
+sudo apt-get install build-essential -y
+pip install -e ./detectron2
+pip install -r ./yolov7-mask/requirements.txt
+pip install speedster
+python -m nebullvm.installers.auto_installer --compilers all
+pip uninstall tensorflow -y
+pip install tqdm h5py ptlflow hdf5plugin scikit-learn torchinfo numba nbformat
+pip install motion-vector-extractor
+pip install torch torchvision torchaudio -U
+pip install numpy -U
+pip uninstall opencv-python-headless -y
+pip uninstall opencv-python -y
+pip install opencv-python
+pip install opencv-python-headless
+pip install tensorboard==2.11.2
+pip install pandas==1.5.3
+cp ../inits/yolov7/yolo.py ../models/yolo.py
+cd ../
+git checkout origin/HARMV-34-Model-Experimentation

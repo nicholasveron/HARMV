@@ -1,5 +1,5 @@
 # PREPROCESSING_TARGET_RESOLUTION = 416 # ntu
-PREPROCESSING_TARGET_RESOLUTION = 320 #ucf101 & hmdb
+PREPROCESSING_TARGET_RESOLUTION = 320  # ucf101 & hmdb
 PREPROCESSING_ARGUMENTS_MOTION_VECTOR_PROCESSOR = {
     "raw_motion_vectors": True,
     "target_size": PREPROCESSING_TARGET_RESOLUTION,
@@ -369,10 +369,10 @@ DEFAULT_TRAINING_PARAMETERS = {
     "epoch": -1,
     "epoch_ask_continue": False,
     "learning_rate": 0.001,
-    "timesteps": 30,
-    "hidden_cell_count": 128,
+    "timesteps": 35,
+    "hidden_cell_count": 512,
     "batch_size": 32,
-    "dataset" : 0,
+    "dataset": 0,
     "split": 0,
     "data_use": 1,
     "data_selector": "motion_vector",
@@ -382,4 +382,3 @@ DEFAULT_TRAINING_PARAMETERS = {
     "crop": True,
     "bounding_value": 32,
 }
-
